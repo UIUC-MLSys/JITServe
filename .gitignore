@@ -198,7 +198,11 @@ _build/
 hip_compat.h
 
 # Benchmark dataset
+benchmarks/examples/
+benchmarks/dataset/
+benchmarks/dataset
 benchmarks/*.json
+benchmarks/*.csv
 
 # Linting
 actionlint
