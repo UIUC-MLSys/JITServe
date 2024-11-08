@@ -47,9 +47,14 @@ async def generate(request: Request) -> Response:
     - other fields: the sampling parameters (See `SamplingParams` for details).
     """
     request_dict = await request.json()
-    prompt = request_dict.pop("prompt")
+    request_info = request_dict.pop("request_info", {})
     stream = request_dict.pop("stream", False)
-    sampling_params = SamplingParams(**request_dict)
+    client_id = request_info.get("client_id", 0)
+    
+    sampling_params = SamplingParams(**request_dict.pop("sampling_params"))
+    logger.info("samling_params: %s", sampling_params)
+    
+    prompt = request_info.get("prompt", "")
     request_id = random_uuid()
 
     assert engine is not None

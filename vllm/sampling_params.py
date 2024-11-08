@@ -486,7 +486,41 @@ class SamplingParams(
             "spaces_between_special_tokens="
             f"{self.spaces_between_special_tokens}, "
             f"truncate_prompt_tokens={self.truncate_prompt_tokens}), "
-            f"guided_decoding={self.guided_decoding}")
+            f"guided_decoding={self.guided_decoding}"
+        )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the sampling parameters to a dictionary."""
+        return {
+            "n": self.n,
+            "best_of": self.best_of,
+            "presence_penalty": self.presence_penalty,
+            "frequency_penalty": self.frequency_penalty,
+            "repetition_penalty": self.repetition_penalty,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "seed": self.seed,
+            "stop": self.stop,
+            "stop_token_ids": self.stop_token_ids,
+            "bad_words": self.bad_words,
+            "include_stop_str_in_output": self.include_stop_str_in_output,
+            "ignore_eos": self.ignore_eos,
+            "max_tokens": self.max_tokens,
+            "min_tokens": self.min_tokens,
+            "logprobs": self.logprobs,
+            "prompt_logprobs": self.prompt_logprobs,
+            "detokenize": self.detokenize,
+            "skip_special_tokens": self.skip_special_tokens,
+            "spaces_between_special_tokens": self.spaces_between_special_tokens,
+            "logits_processors": self.logits_processors,
+            "truncate_prompt_tokens": self.truncate_prompt_tokens,
+            "output_kind": self.output_kind.value,
+            "guided_decoding": self.guided_decoding,
+            "logit_bias": self.logit_bias,
+            "allowed_token_ids": self.allowed_token_ids,
+        }
 
 
 class BeamSearchParams(
