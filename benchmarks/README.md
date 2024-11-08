@@ -1,8 +1,15 @@
 # Benchmarking vLLM
 
-## Downloading the ShareGPT dataset
+## Downloading the BurstGPT dataset
+Link: https://github.com/HPMLL/BurstGPT
+Download the BurstGPT_1.csv file and place it under ./trace
 
-You can download the dataset by running:
-```bash
-wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
-```
+## Construct the trace
+`
+python trace_construction.py --config-key test_long --save-path ./example-long.json
+`
+
+## Run benchmark
+`
+python benchmark_scheduler.py --model meta-llama/Llama-3.1-8B-Instruct --save-result --request-rate 0.2,0.8
+`

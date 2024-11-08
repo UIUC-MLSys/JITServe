@@ -200,6 +200,7 @@ hip_compat.h
 # Benchmark dataset
 benchmarks/examples/
 benchmarks/dataset/
+benchmarks/result/
 benchmarks/dataset
 benchmarks/*.json
 benchmarks/*.csv

@@ -6,7 +6,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from benchmarks.trace import Trace, TraceConfig
 
-config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trace_config.json")
 
 
 def trace_construction(trace_config: TraceConfig, save_path: str):
@@ -16,18 +16,18 @@ def trace_construction(trace_config: TraceConfig, save_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Trace Construction Benchmark")
-    parser.add_argument("--config_key", type=str, default='test_short', help="Configuration key")
-    parser.add_argument("--save_path", type=str, default='./example.json', help="Path to save the trace")
+    parser.add_argument("--config-key", type=str, default='test_short', help="Configuration key")
+    parser.add_argument("--save-path", type=str, default='./example.json', help="Path to save the trace")
     parser.add_argument("--model", type=str, default=None, help="Model name")
     parser.add_argument("--tokenizer", type=str, default=None, help="Tokenizer name")
-    parser.add_argument("--dataset_name", type=str, default=None, help="Dataset name")
-    parser.add_argument("--dataset_path", type=str, default=None, help="Path to the dataset")
-    parser.add_argument("--max_request_num", type=int, default=1000, help="Maximum number of requests to handle")
-    parser.add_argument("--is_real", type=bool, default=False, help="Flag to indicate if real data is used")
-    parser.add_argument("--is_random_pick", type=bool, default=False, help="Flag for random selection of requests")
-    parser.add_argument("--trust_model_code", type=bool, default=False, help="Flag to trust model code or not")
-    parser.add_argument("--poisson_lambda", type=float, default=80, help="Poisson lambda value")
-    parser.add_argument("--deadline_range", type=int, default=(1000, 50000), help="Deadline range")
+    parser.add_argument("--dataset-name", type=str, default=None, help="Dataset name")
+    parser.add_argument("--dataset-path", type=str, default=None, help="Path to the dataset")
+    parser.add_argument("--max-request-num", type=int, default=1000, help="Maximum number of requests to handle")
+    parser.add_argument("--is-real", type=bool, default=False, help="Flag to indicate if real data is used")
+    parser.add_argument("--is-random-pick", type=bool, default=False, help="Flag for random selection of requests")
+    parser.add_argument("--trust-model-code", type=bool, default=False, help="Flag to trust model code or not")
+    parser.add_argument("--poisson-lambda", type=float, default=80, help="Poisson lambda value")
+    parser.add_argument("--deadline-range", type=int, default=(1000, 50000), help="Deadline range")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     
     args = parser.parse_args()

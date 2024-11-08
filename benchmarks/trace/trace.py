@@ -20,7 +20,7 @@ class RequestType(IntEnum):
     Collective = 2
     
     
-class Request:
+class RequestFormat:
     '''
     A class to represent a request.
     '''
@@ -47,7 +47,7 @@ class Request:
         self.priority = priority
         
     @classmethod
-    def from_dict(cls, data: Dict) -> 'Request':
+    def from_dict(cls, data: Dict) -> 'RequestFormat':
         '''
         Initialize the Request from a dictionary.
         '''
@@ -62,6 +62,22 @@ class Request:
             data["deadline"],
             data["priority"],
         )
+    
+    def to_dict(self) -> Dict:
+        '''
+        Convert the request to a dictionary.
+        '''
+        return {
+            "prompt": self.prompt,
+            "output": self.output,
+            "prompt_len": self.prompt_len,
+            "output_len": self.output_len,
+            "request_type": self.request_type,
+            "collection_id": self.collection_id,
+            "deliver_time": self.deliver_time,
+            "deadline": self.deadline,
+            "priority": self.priority,
+        }
     
 
 class BaseDataset:
@@ -219,13 +235,13 @@ class BaseDataset:
         return priority
     
     
-    def _construct_request_list(self) -> List[Request]:
+    def _construct_request_list(self) -> List[RequestFormat]:
         '''
         Construct the request list.
         '''
         request_list = []
         for i in range(len(self.prompts)):
-            request = Request(self.prompts[i], self.outputs[i], self.prompts_len[i], self.outputs_len[i],
+            request = RequestFormat(self.prompts[i], self.outputs[i], self.prompts_len[i], self.outputs_len[i],
                               self.request_type_list[i], i,
                               self.deliver_time[i], self.deadline[i], self.priority[i])
             request_list.append(request)
@@ -248,6 +264,28 @@ class BaseDataset:
             "priority": request.priority,
         } for request in self.request_list]
         return dataset
+    
+    @classmethod
+    def divide_by_rate(cls, dataset: List[RequestFormat], rate: List[float]) -> List[List[RequestFormat]]:
+        '''
+        Divide the dataset into several parts by the rate.
+        '''
+        assert sum(rate) == 1
+        # shuffle the dataset
+        random.shuffle(dataset)
+        num_requests = len(dataset)
+        num_requests_list = [int(num_requests * r) for r in rate]
+        num_requests_list[-1] = num_requests - sum(num_requests_list[:-1])
+        
+        divided_dataset = []
+        start_idx = 0
+        for num in num_requests_list:
+            divided_dataset.append(dataset[start_idx: start_idx + num])
+            start_idx += num
+            
+        [dataset.sort(key=lambda x: x.deliver_time) for dataset in divided_dataset]
+        
+        return divided_dataset
     
    
 class TraceConfig:
@@ -434,7 +472,7 @@ class Trace:
                            self.is_random_pick, self.poisson_lambda, self.deadline_range)
         
         
-    def save_trace(self, save_path: str = "./dataset/trace.json") -> None:
+    def save_trace(self, save_path: str) -> None:
         '''
         Save the trace to a json file.
         '''
@@ -446,11 +484,14 @@ class Trace:
             
     
     @classmethod
-    def load_trace(cls, trace_path: str = "./dataset/trace.json") -> Dict:
+    def load_trace(cls, trace_path: str) -> List[RequestFormat]:
         '''
         Load the trace from a json file.
         '''
         
         with open(trace_path, 'r', encoding='utf-8') as f:
             dataset = json.load(f)
-        return dataset
+        request_list = []
+        for req in dataset:
+            request_list.append(RequestFormat.from_dict(req))
+        return request_list
