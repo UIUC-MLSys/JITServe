@@ -222,6 +222,7 @@ class LLM:
         prompt_token_ids: Optional[List[int]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        client_id: Optional[int] = None,
     ) -> List[RequestOutput]:
         ...
 
@@ -234,6 +235,7 @@ class LLM:
         prompt_token_ids: Optional[List[List[int]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        client_id: Optional[int] = None,
     ) -> List[RequestOutput]:
         ...
 
@@ -247,6 +249,7 @@ class LLM:
         prompt_token_ids: List[int],
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        client_id: Optional[int] = None,
     ) -> List[RequestOutput]:
         ...
 
@@ -260,6 +263,7 @@ class LLM:
         prompt_token_ids: List[List[int]],
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        client_id: Optional[int] = None,
     ) -> List[RequestOutput]:
         ...
 
@@ -271,6 +275,7 @@ class LLM:
         prompt_token_ids: Union[List[int], List[List[int]]],
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        client_id: Optional[int] = None,
     ) -> List[RequestOutput]:
         ...
 
@@ -284,6 +289,7 @@ class LLM:
                                         Sequence[SamplingParams]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        client_id: Optional[int] = None,
     ) -> List[RequestOutput]:
         ...
 
@@ -298,6 +304,7 @@ class LLM:
                        Optional[Union[str, List[str]]]] = None,
         sampling_params: Optional[Union[SamplingParams,
                                         Sequence[SamplingParams]]] = None,
+        client_id: Optional[int] = None,
         prompt_token_ids: Optional[Union[List[int], List[List[int]]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
@@ -377,6 +384,7 @@ class LLM:
         self._validate_and_add_requests(
             prompts=parsed_prompts,
             params=sampling_params,
+            client_id=client_id,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
             guided_options=guided_options_request,
@@ -815,6 +823,7 @@ class LLM:
         prompts: Union[PromptType, Sequence[PromptType]],
         params: Union[SamplingParams, Sequence[SamplingParams], PoolingParams,
                       Sequence[PoolingParams]],
+        client_id: int,
         lora_request: Optional[Union[Sequence[LoRARequest], LoRARequest]],
         prompt_adapter_request: Optional[PromptAdapterRequest],
         guided_options: Optional[GuidedDecodingRequest] = None,
@@ -853,6 +862,7 @@ class LLM:
             self._add_request(
                 prompt,
                 params[i] if isinstance(params, Sequence) else params,
+                client_id=client_id,
                 lora_request=lora_request[i] if isinstance(
                     lora_request, Sequence) else lora_request,
                 prompt_adapter_request=prompt_adapter_request,
@@ -863,6 +873,7 @@ class LLM:
         self,
         prompt: PromptType,
         params: Union[SamplingParams, PoolingParams],
+        client_id: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
@@ -872,6 +883,7 @@ class LLM:
             request_id,
             prompt,
             params,
+            client_id=client_id,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
             priority=priority,

@@ -408,6 +408,7 @@ class Sequence:
         inputs: "SingletonInputs",
         block_size: int,
         eos_token_id: Optional[int] = None,
+        client_id: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         from_decoder_prompt: bool = True,
@@ -416,6 +417,7 @@ class Sequence:
         self.inputs = inputs
         self.block_size = block_size
         self.eos_token_id = eos_token_id
+        self.client_id = client_id
         self.lora_request = lora_request
         self.prompt_adapter_request = prompt_adapter_request
         self.from_decoder_prompt = from_decoder_prompt
@@ -671,6 +673,7 @@ class SequenceGroup:
         seqs: List[Sequence],
         arrival_time: float,
         sampling_params: Optional[SamplingParams] = None,
+        client_id: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
         embeddings: Optional[List[float]] = None,
         pooling_params: Optional[PoolingParams] = None,
@@ -692,6 +695,7 @@ class SequenceGroup:
                                       first_scheduled_time=None,
                                       first_token_time=None,
                                       time_in_queue=None)
+        self.client_id = client_id
         self.lora_request = lora_request
         self.prompt_logprobs: Optional[PromptLogprobs] = None
         self.state = SequenceGroupState()

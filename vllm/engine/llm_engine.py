@@ -647,12 +647,14 @@ class LLMEngine:
         arrival_time: float,
         lora_request: Optional[LoRARequest],
         prompt_adapter_request: Optional[PromptAdapterRequest],
+        client_id: Optional[int] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
     ) -> Optional[SequenceGroup]:
         """Add a processed request to the engine's request pool.
         return the created sequence group.
         """
+        # TODO(zhiyu): add support for n > 1
         if isinstance(params, SamplingParams) and params.n > 1:
             ParallelSampleSequenceGroup.add_request(
                 request_id,
@@ -673,7 +675,7 @@ class LLMEngine:
         seq_id = next(self.seq_counter)
         eos_token_id = self.input_preprocessor.get_eos_token_id(lora_request)
 
-        seq = Sequence(seq_id, processed_inputs, block_size, eos_token_id,
+        seq = Sequence(seq_id, processed_inputs, block_size, eos_token_id, client_id,
                        lora_request, prompt_adapter_request)
 
         encoder_seq = None
@@ -682,6 +684,7 @@ class LLMEngine:
                                    processed_inputs,
                                    block_size,
                                    eos_token_id,
+                                   client_id,
                                    lora_request,
                                    prompt_adapter_request,
                                    from_decoder_prompt=False)
@@ -693,6 +696,7 @@ class LLMEngine:
                 seq,
                 params,
                 arrival_time=arrival_time,
+                client_id=client_id,
                 lora_request=lora_request,
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
@@ -732,6 +736,7 @@ class LLMEngine:
         *,
         inputs: PromptType,
         params: Union[SamplingParams, PoolingParams],
+        client_id: Optional[int] = None,
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
@@ -746,6 +751,7 @@ class LLMEngine:
         request_id: str,
         prompt: PromptType,
         params: Union[SamplingParams, PoolingParams],
+        client_id: Optional[int] = None,
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
@@ -763,6 +769,7 @@ class LLMEngine:
             request_id: str,
             prompt: Optional[PromptType] = None,
             params: Optional[Union[SamplingParams, PoolingParams]] = None,
+            client_id: Optional[int] = None,
             arrival_time: Optional[float] = None,
             lora_request: Optional[LoRARequest] = None,
             trace_headers: Optional[Mapping[str, str]] = None,
@@ -848,6 +855,7 @@ class LLMEngine:
             request_id=request_id,
             processed_inputs=processed_inputs,
             params=params,
+            client_id=client_id,
             arrival_time=arrival_time,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
@@ -862,6 +870,7 @@ class LLMEngine:
         sampling_params: SamplingParams,
         arrival_time: float,
         lora_request: Optional[LoRARequest],
+        client_id: Optional[int] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         encoder_seq: Optional[Sequence] = None,
@@ -892,6 +901,7 @@ class LLMEngine:
             seqs=[seq],
             arrival_time=arrival_time,
             sampling_params=sampling_params,
+            client_id=client_id,
             lora_request=lora_request,
             trace_headers=trace_headers,
             prompt_adapter_request=prompt_adapter_request,

@@ -18,9 +18,11 @@ class Request:
         sampling_params: SamplingParams,
         eos_token_id: Optional[int],
         arrival_time: float,
+        client_id: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
     ) -> None:
         self.request_id = request_id
+        self.client_id = client_id
         self.inputs = inputs
         self.sampling_params = sampling_params
         # Because of LoRA, the eos token id can be different for each request.
