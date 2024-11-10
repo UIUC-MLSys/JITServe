@@ -480,14 +480,16 @@ class Scheduler:
             self.block_manager.free_cross(seq_group)
 
     def has_unfinished_seqs(self) -> bool:
-        return len(self.waiting) != 0 or len(self.running) != 0 or len(
+        length_waiting = len(self.waiting) if self.scheduler_config.policy != "vtc" else len(self.waiting.waiting_req_list)
+        return length_waiting != 0 or len(self.running) != 0 or len(
             self.swapped) != 0
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_manager.get_prefix_cache_hit_rate(device)
 
     def get_num_unfinished_seq_groups(self) -> int:
-        return len(self.waiting) + len(self.running) + len(self.swapped)
+        length_waiting = len(self.waiting) if self.scheduler_config.policy != "vtc" else len(self.waiting.waiting_req_list)
+        return length_waiting + len(self.running) + len(self.swapped)
 
     def get_and_reset_finished_requests_ids(self) -> List[str]:
         """Flushes the list of request ids of previously finished seq_groups."""

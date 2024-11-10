@@ -182,7 +182,7 @@ class EngineArgs:
     disable_async_output_proc: bool = False
     override_neuron_config: Optional[Dict[str, Any]] = None
     mm_processor_kwargs: Optional[Dict[str, Any]] = None
-    scheduling_policy: Literal["fcfs", "priority"] = "fcfs"
+    scheduling_policy: Literal["fcfs", "priority", "vtc"] = "fcfs"
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -842,7 +842,7 @@ class EngineArgs:
 
         parser.add_argument(
             '--scheduling-policy',
-            choices=['fcfs', 'priority'],
+            choices=['fcfs', 'priority', 'vtc'],
             default="fcfs",
             help='The scheduling policy to use. "fcfs" (first come first served'
             ', i.e. requests are handled in order of arrival; default) '

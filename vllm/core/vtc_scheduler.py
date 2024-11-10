@@ -78,20 +78,20 @@ class VTCReqQueue:
         if len(current_batch) > 0:
             for req in current_batch:
                 # (current num of tokens, max remaining tokens)
-                sequence_len = req.first_seq.get_prompt_len + req.first_seq.get_output_len
+                sequence_len = req.first_seq.get_prompt_len() + req.first_seq.get_output_len()
                 self.cache_len_list.append((sequence_len, self.max_model_len - sequence_len))
 
     
     # @calculate_time(show=True, min_cost_ms=0.1)
     def _can_add_new_req(self, req: SequenceGroup):
         self.cache_len_list.append(
-            (req.first_seq.get_prompt_len + 1, self.max_model_len - req.first_seq.get_prompt_len - 1)
+            (req.first_seq.get_prompt_len() + 1, self.max_model_len - req.first_seq.get_prompt_len() - 1)
         )
         # Sort cache_len_list in descending order based on remaining length
         self.cache_len_list.sort(key=lambda x: -x[1])
 
-        left_out_len_array = [[e[1] for e in self.cache_len_list]]
-        has_run_len_array = [[e[0] for e in self.cache_len_list]]
+        left_out_len_array = [e[1] for e in self.cache_len_list]
+        has_run_len_array = [e[0] for e in self.cache_len_list]
 
         max_required_blocks = 0
         num_of_seq = len(self.cache_len_list)
@@ -136,13 +136,13 @@ class VTCReqQueue:
                 #     self.user_req_list[client_id].popleft()
                 #     continue
                 if (self._can_add_new_req(req) and
-                    new_batch_total_tokens + req.first_seq.get_prompt_len <= self.max_num_batched_tokens):
+                    new_batch_total_tokens + req.first_seq.get_prompt_len() <= self.max_num_batched_tokens):
                     can_run_list.append(req)
-                    new_batch_total_tokens += req.first_seq.get_prompt_len
+                    new_batch_total_tokens += req.first_seq.get_prompt_len()
                     self.user_req_list[client_id].popleft()
                     # update fairness counter, adopt linear cost function in VTC
-                    self.served[client_id] += req.first_seq.get_prompt_len * self.input_price
-                    active_served[client_id] += req.first_seq.get_prompt_len * self.input_price
+                    self.served[client_id] += req.first_seq.get_prompt_len() * self.input_price
+                    active_served[client_id] += req.first_seq.get_prompt_len() * self.input_price
                 else:
                     break
             else:
