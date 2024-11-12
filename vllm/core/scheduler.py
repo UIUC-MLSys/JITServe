@@ -480,16 +480,14 @@ class Scheduler:
             self.block_manager.free_cross(seq_group)
 
     def has_unfinished_seqs(self) -> bool:
-        length_waiting = len(self.waiting) if self.scheduler_config.policy != "vtc" else len(self.waiting.waiting_req_list)
-        return length_waiting != 0 or len(self.running) != 0 or len(
+        return len(self.waiting) != 0 or len(self.running) != 0 or len(
             self.swapped) != 0
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_manager.get_prefix_cache_hit_rate(device)
 
     def get_num_unfinished_seq_groups(self) -> int:
-        length_waiting = len(self.waiting) if self.scheduler_config.policy != "vtc" else len(self.waiting.waiting_req_list)
-        return length_waiting + len(self.running) + len(self.swapped)
+        return len(self.waiting) + len(self.running) + len(self.swapped)
 
     def get_and_reset_finished_requests_ids(self) -> List[str]:
         """Flushes the list of request ids of previously finished seq_groups."""
@@ -1304,7 +1302,7 @@ class Scheduler:
                 return SchedulerOutputs(
                     scheduled_seq_groups=running_scheduled.decode_seq_groups+prefill_seq_groups,
                     num_prefill_groups=len(prefill_seq_groups),
-                    num_batched_tokens=len(running_scheduled.decode_seq_groups) + sum([seq_group.token_chunk_size for seq_group in seq_groups]),
+                    num_batched_tokens=len(running_scheduled.decode_seq_groups) + sum([seq_group.token_chunk_size for seq_group in prefill_seq_groups]),
                     blocks_to_swap_in=[],
                     blocks_to_swap_out=[],
                     blocks_to_copy=running_scheduled.blocks_to_copy,
@@ -1334,10 +1332,10 @@ class Scheduler:
 
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
-        if self.scheduler_config.chunked_prefill_enabled:
-            return self._schedule_chunked_prefill()
-        elif self.scheduler_config.policy == "vtc":
+        if self.scheduler_config.policy == "vtc":
             return self._schedule_vtc()
+        elif self.scheduler_config.chunked_prefill_enabled:
+            return self._schedule_chunked_prefill()
         else:
             return self._schedule_default()
 

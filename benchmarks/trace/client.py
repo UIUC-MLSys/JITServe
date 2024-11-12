@@ -235,7 +235,7 @@ async def send_request(
             "request_info": request_info.request.to_dict(),
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
-            "stream": True
+            "stream": False
         }
         # output.prompt_len = request_info.prompt_len
 
@@ -256,7 +256,7 @@ async def send_request(
                         chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                         # TODO chunk parsing
                         # remove EOS token
-                        data = json.loads(chunk[:-1])
+                        data = json.loads(chunk)
                         timestamp = time.perf_counter()
                         # First token
                         if ttft == 0.0:

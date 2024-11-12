@@ -9,7 +9,7 @@ from typing import Deque
 import math
 
 from vllm.logger import init_logger
-from vllm.sequence import SequenceGroup
+from vllm.sequence import (SequenceGroup, SequenceStatus)
 from vllm.config import _EMBEDDING_MODEL_MAX_NUM_BATCHED_TOKENS
 
 logger = init_logger(__name__)
@@ -55,6 +55,21 @@ class VTCReqQueue:
         self.served: Dict[int, int] = {}
         # client_id: list of sequences(requests)
         self.user_req_list: Dict[int, List[SequenceGroup]] = {}
+    
+    def __len__(self):
+        return len(self.waiting_req_list)
+
+    def __iter__(self):
+        self.index = 0
+        return self
+
+    def __next__(self):
+        if self.index < len(self.waiting_req_list):
+            item = self.waiting_req_list[self.index]
+            self.index += 1
+            return item
+        else:
+            raise StopIteration
 
     def append(self, req: SequenceGroup):
         self.waiting_req_list.append(req)
@@ -98,8 +113,8 @@ class VTCReqQueue:
 
         for i in range(num_of_seq-1, -1, -1):
             num_iter = left_out_len_array[i] # num of iterations passed by
-            left_out_len_array -= num_iter
-            has_run_len_array += num_iter
+            left_out_len_array = [e - num_iter for e in left_out_len_array]
+            has_run_len_array = [e + num_iter for e in has_run_len_array]
             current_block = sum([math.ceil(e/self.block_size) for e in has_run_len_array[:i+1]])
             max_required_blocks = max(current_block, max_required_blocks)
 
@@ -120,9 +135,9 @@ class VTCReqQueue:
         
         self._init_cache_list(current_batch)
         can_run_list = deque()
-        # abort_list = []
+        abort_list = []
         new_batch_total_tokens = 0
-        # aborted_count = 0
+        aborted_count = 0
         active_served = {k: v for k, v in self.served.items()}
         while True:
             if len(active_served) == 0:
@@ -130,11 +145,17 @@ class VTCReqQueue:
             client_id = min(active_served, key=active_served.get)
             if len(self.user_req_list[client_id]) > 0:
                 req = self.user_req_list[client_id][0]
-                # if req.aborted:
-                #     aborted_count += 1
-                #     abort_list.append(req)
-                #     self.user_req_list[client_id].popleft()
-                #     continue
+                prompt_limit = min(self.max_model_len, self.max_num_batched_tokens)
+                if req.first_seq.get_prompt_len() >= prompt_limit:
+                    logger.warning(
+                        "Input prompt (%d tokens) is too long"
+                        " and exceeds limit of %d", req.first_seq.get_prompt_len(), prompt_limit)
+                    for seq in req.get_seqs():
+                        seq.status = SequenceStatus.FINISHED_IGNORED
+                    aborted_count += 1
+                    abort_list.append(req)
+                    self.user_req_list[client_id].popleft()
+                    continue
                 if (self._can_add_new_req(req) and
                     new_batch_total_tokens + req.first_seq.get_prompt_len() <= self.max_num_batched_tokens):
                     can_run_list.append(req)
@@ -149,10 +170,10 @@ class VTCReqQueue:
                 del active_served[client_id]
 
         if len(can_run_list) != 0:
-            # self.waiting_req_list = [req for req in self.waiting_req_list
-            #                          if req not in can_run_list and req not in abort_list]
             self.waiting_req_list = [req for req in self.waiting_req_list
-                                     if req not in can_run_list]
+                                     if req not in can_run_list and req not in abort_list]
+            # self.waiting_req_list = [req for req in self.waiting_req_list
+            #                          if req not in can_run_list]
             return can_run_list
         else:
             return None
