@@ -665,6 +665,7 @@ class LLMEngine:
                 lora_request=lora_request,
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
+                client_id=client_id,
                 priority=priority,
             )
             return None
@@ -708,6 +709,7 @@ class LLMEngine:
                 seq,
                 params,
                 arrival_time=arrival_time,
+                client_id=client_id,
                 lora_request=lora_request,
                 prompt_adapter_request=prompt_adapter_request,
                 encoder_seq=encoder_seq,
@@ -918,6 +920,7 @@ class LLMEngine:
         arrival_time: float,
         lora_request: Optional[LoRARequest],
         prompt_adapter_request: Optional[PromptAdapterRequest],
+        client_id: Optional[int] = None,
         encoder_seq: Optional[Sequence] = None,
         priority: int = 0,
     ) -> SequenceGroup:
@@ -931,6 +934,7 @@ class LLMEngine:
             arrival_time=arrival_time,
             lora_request=lora_request,
             pooling_params=pooling_params,
+            client_id=client_id,
             prompt_adapter_request=prompt_adapter_request,
             encoder_seq=encoder_seq,
             priority=priority)

@@ -423,6 +423,7 @@ class _AsyncLLMEngine(LLMEngine):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
     ) -> None:
         ...
@@ -437,6 +438,7 @@ class _AsyncLLMEngine(LLMEngine):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
     ) -> None:
         ...
@@ -454,6 +456,7 @@ class _AsyncLLMEngine(LLMEngine):
             lora_request: Optional[LoRARequest] = None,
             trace_headers: Optional[Mapping[str, str]] = None,
             prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+            client_id: Optional[int] = None,
             priority: int = 0,
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
@@ -499,6 +502,7 @@ class _AsyncLLMEngine(LLMEngine):
             arrival_time=arrival_time,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
+            client_id=client_id,
             trace_headers=trace_headers,
             priority=priority,
         )
@@ -881,6 +885,7 @@ class AsyncLLMEngine(EngineClient):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
     ) -> Coroutine[None, None, AsyncGenerator[Union[
             RequestOutput, EmbeddingRequestOutput], None]]:
@@ -896,6 +901,7 @@ class AsyncLLMEngine(EngineClient):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
     ) -> Coroutine[None, None, AsyncGenerator[Union[
             RequestOutput, EmbeddingRequestOutput], None]]:
@@ -914,6 +920,7 @@ class AsyncLLMEngine(EngineClient):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
         *,
         inputs: Optional[PromptType] = None,  # DEPRECATED
@@ -946,6 +953,7 @@ class AsyncLLMEngine(EngineClient):
             lora_request=lora_request,
             trace_headers=trace_headers,
             prompt_adapter_request=prompt_adapter_request,
+            client_id=client_id,
             priority=priority,
         )
 
@@ -959,6 +967,7 @@ class AsyncLLMEngine(EngineClient):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
     ) -> AsyncGenerator[RequestOutput, None]:
         """Generate outputs for a request.
@@ -1033,6 +1042,7 @@ class AsyncLLMEngine(EngineClient):
                 lora_request=lora_request,
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
+                client_id=client_id,
                 priority=priority,
         ):
             yield LLMEngine.validate_output(output, RequestOutput)
@@ -1044,6 +1054,7 @@ class AsyncLLMEngine(EngineClient):
         request_id: str,
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
+        client_id: Optional[int] = None,
         priority: int = 0,
     ) -> AsyncGenerator[EmbeddingRequestOutput, None]:
         """Generate outputs for a request from an embedding model.
@@ -1113,6 +1124,7 @@ class AsyncLLMEngine(EngineClient):
                 pooling_params,
                 lora_request=lora_request,
                 trace_headers=trace_headers,
+                client_id=client_id,
                 priority=priority,
         ):
             yield LLMEngine.validate_output(output, EmbeddingRequestOutput)

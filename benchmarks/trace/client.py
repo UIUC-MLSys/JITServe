@@ -238,6 +238,7 @@ async def send_request(
             "stream": False
         }
         # output.prompt_len = request_info.prompt_len
+        print(f"request_info.client_id: {request_info.client_id}")
 
         generated_text = ""
         ttft = 0.0
@@ -305,6 +306,7 @@ async def client_simulator(
         # request_format = RequestFormat.from_dict(request)
         # TODO            
         request_info = RequestInput(request, sampling_params, client_id, api_url)
+        print(f"client_id: {client_id}")
         if request.request_type == RequestType.Collective:
             tasks.append(asyncio.create_task(send_collective_request(request_info, client_deadline, pbar)))
         else:
