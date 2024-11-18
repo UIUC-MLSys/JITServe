@@ -17,7 +17,7 @@ from vllm.inputs.parse import is_encoder_decoder_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sampling_params import RequestOutputKind, SamplingParams
+from vllm.sampling_params import RequestType, RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 
 if TYPE_CHECKING:
@@ -680,7 +680,10 @@ class SequenceGroup:
         encoder_seq: Optional[Sequence] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        priority: int = 0,
+        request_type: Optional[RequestType] = None,
+        slo_gain: Optional[float] = 0,
+        preemption_num: Optional[int] = 0,
+        priority: Optional[int] = 0,
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -704,6 +707,9 @@ class SequenceGroup:
         self.prompt_adapter_request = prompt_adapter_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
+        self.request_type = request_type
+        self.preemtion_num = preemption_num
+        self.slo_gain = slo_gain
         self.priority = priority
 
         self.cached_request_output = None

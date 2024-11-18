@@ -142,7 +142,75 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
             return AllocStatus.OK
         else:
-            return AllocStatus.LATER
+            return AllocStatus.LATER   
+    
+    def can_allocate_batch(self,
+                           seq_group_list: List[SequenceGroup],
+                           allocated_seq_groups: List[SequenceGroup] = None,
+                           num_lookahead_slots: int = 0) -> Tuple[AllocStatus, int]:
+        """Determine if there is enough space in the GPU KV cache to allocate
+        the given sequence group list.
+
+        This method is used to determine if the given sequence group can be
+        allocated in the GPU KV cache. The method returns a status indicating
+        whether the allocation can be done immediately, later, or never, and a number indicating
+        how many sequence groups can be allocated for the given sequence group list.
+
+        Args:
+            seq_group (SequenceGroup): The sequence group to allocate.
+            num_lookahead_slots (int, optional): The number of lookahead slots
+                used in speculative decoding. Defaults to 0.
+
+        Returns:
+            AllocStatus: The status of the allocation.
+        """
+        num_free_gpu_blocks = self.block_allocator.get_num_total_blocks(device=Device.GPU)
+        
+        for seq_group in allocated_seq_groups:
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                num_required_blocks = BlockTable.get_num_required_blocks(
+                    seq.get_token_ids(),
+                    block_size=self.block_size,
+                    num_lookahead_slots=num_lookahead_slots,
+                )
+                if seq_group.is_encoder_decoder():
+                    encoder_seq = seq_group.get_encoder_seq()
+                    assert encoder_seq is not None
+                    num_required_blocks += BlockTable.get_num_required_blocks(
+                        encoder_seq.get_token_ids(),
+                        block_size=self.block_size,
+                    )
+                if self.max_block_sliding_window is not None:
+                    num_required_blocks = min(num_required_blocks,
+                                            self.max_block_sliding_window)
+                num_free_gpu_blocks -= num_required_blocks
+        
+        num_allocatable_seq_groups = 0
+        
+        for seq_group in seq_group_list:
+            check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
+            seq = seq_group.seqs[0]
+            assert seq.status == SequenceStatus.RUNNING or seq.status == SequenceStatus.SWAPPED
+            
+            num_required_blocks = BlockTable.get_num_required_blocks(
+                seq.get_token_ids(),
+                block_size=self.block_size,
+                num_lookahead_slots=num_lookahead_slots,
+            )
+            
+            if seq_group.is_encoder_decoder():
+                raise NotImplementedError("Encoder-decoder model is not supported in batch allocation.")
+
+            if self.max_block_sliding_window is not None:
+                raise NotImplementedError("Sliding window is not supported in batch allocation.")
+            
+            if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
+                num_allocatable_seq_groups += 1    
+            else:
+                return AllocStatus.LATER, num_allocatable_seq_groups
+        
+        return AllocStatus.OK, num_allocatable_seq_groups
+    
 
     def _allocate_sequence(self, seq: Sequence) -> BlockTable:
         block_table = BlockTable(
