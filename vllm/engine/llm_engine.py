@@ -44,6 +44,7 @@ from vllm.outputs import (EmbeddingRequestOutput, RequestOutput,
                           RequestOutputFactory)
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
+from vllm.request_info import RequestInfo, RequestType
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.sequence import (EmbeddingSequenceGroupOutput, ExecuteModelRequest,
                            ParallelSampleSequenceGroup, Sequence,
@@ -644,6 +645,7 @@ class LLMEngine:
         request_id: str,
         processed_inputs: Union[DecoderOnlyInputs, EncoderDecoderInputs],
         params: Union[SamplingParams, PoolingParams],
+        request_info: RequestInfo,
         arrival_time: float,
         lora_request: Optional[LoRARequest],
         prompt_adapter_request: Optional[PromptAdapterRequest],
@@ -661,6 +663,7 @@ class LLMEngine:
                 self,
                 params,
                 processed_inputs=processed_inputs,
+                request_info=request_info,
                 arrival_time=arrival_time,
                 lora_request=lora_request,
                 trace_headers=trace_headers,
@@ -695,6 +698,7 @@ class LLMEngine:
                 request_id,
                 seq,
                 params,
+                request_info=request_info,
                 arrival_time=arrival_time,
                 client_id=client_id,
                 lora_request=lora_request,
@@ -868,6 +872,7 @@ class LLMEngine:
         request_id: str,
         seq: Sequence,
         sampling_params: SamplingParams,
+        request_info: RequestInfo,
         arrival_time: float,
         lora_request: Optional[LoRARequest],
         client_id: Optional[int] = None,
@@ -900,6 +905,7 @@ class LLMEngine:
             request_id=request_id,
             seqs=[seq],
             arrival_time=arrival_time,
+            request_info=request_info,
             sampling_params=sampling_params,
             client_id=client_id,
             lora_request=lora_request,
@@ -1170,6 +1176,7 @@ class LLMEngine:
 
             seq_group = scheduled_seq_group.seq_group
             seq_group.maybe_set_first_token_time(now)
+            # logger.info(f"Creating request output for {seq_group.request_id}")
             request_output = RequestOutputFactory.create(
                 seq_group,
                 self.seq_id_to_seq_group,
@@ -1202,12 +1209,13 @@ class LLMEngine:
                 self.process_request_outputs_callback(ctx.request_outputs)
                 ctx.request_outputs.clear()
             return
-
+        # logger.info(f"Indices: {indices}")
         # Create the outputs
         for i in indices:
             if i in skip or i in finished_before or i in finished_now:
                 continue  # Avoids double processing
-
+            
+            # logger.info(f"Creating request output for {seq_group.request_id}")
             scheduled_seq_group = scheduler_outputs.scheduled_seq_groups[i]
 
             seq_group = scheduled_seq_group.seq_group

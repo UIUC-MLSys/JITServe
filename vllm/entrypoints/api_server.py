@@ -18,6 +18,7 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.launcher import serve_http
 from vllm.logger import init_logger
+from vllm.request_info import RequestInfo
 from vllm.sampling_params import SamplingParams
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import (FlexibleArgumentParser, iterate_with_cancellation,
@@ -55,10 +56,13 @@ async def generate(request: Request) -> Response:
     logger.info("samling_params: %s", sampling_params)
     
     prompt = request_info.get("prompt", "")
+    request_info["client_id"] = client_id
+    request_info = RequestInfo.from_json(request_info)
     request_id = random_uuid()
 
     assert engine is not None
-    results_generator = engine.generate(prompt, sampling_params, request_id)
+    results_generator = engine.generate(prompt, request_info, 
+                                        sampling_params, request_id)
     results_generator = iterate_with_cancellation(
         results_generator, is_cancelled=request.is_disconnected)
 

@@ -10,6 +10,7 @@ from typing import Set, Tuple, Union
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
+from vllm.core.policy import SJFPolicy, SRTFPolicy, SLOPoilicy, concord_support_policy
 from vllm.core.vtc_scheduler import VTCReqQueue
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -364,12 +365,23 @@ class Scheduler:
             num_cpu_blocks=num_cpu_blocks,
             sliding_window=self.cache_config.sliding_window,
             enable_caching=self.cache_config.enable_prefix_caching)
+        
+        # TODO
+        self.policy = SLOPoilicy() if scheduler_config.policy == "slo" else \
+            SJFPolicy() if scheduler_config.policy == "sjf" else \
+            SRTFPolicy() if scheduler_config.policy == "srtf" else None
+        
+        # logger.info("Scheduler policy: %s", scheduler_config.policy)
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
         # TODO(zhiyu): could modify num_gpu_blocks*cache_config.block_size if really OOM
-        self.waiting = deque() if self.scheduler_config.policy != "vtc" else VTCReqQueue(num_gpu_blocks, cache_config.block_size, self.scheduler_config.max_num_batched_tokens,
-                        self.scheduler_config.max_num_seqs, self.scheduler_config.max_model_len)
+        self.waiting = deque() if \
+                        self.scheduler_config.policy != "vtc" \
+                            else VTCReqQueue(num_gpu_blocks, cache_config.block_size, 
+                                             self.scheduler_config.max_num_batched_tokens,
+                                             self.scheduler_config.max_num_seqs, 
+                                             self.scheduler_config.max_model_len)
         # Sequence groups in the RUNNING state.
         # Contain decode requests.
         self.running: Deque[SequenceGroup] = deque()
@@ -442,6 +454,8 @@ class Scheduler:
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
+        if self.policy is not None:
+            self.policy.add_seq_group(seq_group=seq_group)
 
     def _add_seq_group_to_running(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the running queue.
@@ -893,7 +907,7 @@ class Scheduler:
         decoding_queue = [seq_group for seq_group in self.running
                             if not seq_group.is_prefill()]
         decoding_queue.extend(self.swapped)
-        sorted(decoding_queue, key=self._get_priority_test)
+        sorted(decoding_queue, key=self.policy.get_priority)
 
         # logger.info(f"running_queue: {[seq_group.request_id for seq_group in self.running]}")
         # logger.info(f"prefilling_queue: {[seq_group.request_id for seq_group in prefilling_queue]}")
@@ -1492,8 +1506,6 @@ class Scheduler:
 
         # TODO
         # Don't schedule decodes if prefills are scheduled.
-        # NOTE: If `_schedule_prefills` doesn't enable chunking, self.running
-        # only contains decode requests, not chunked prefills.
         if len(prefills.seq_groups) == 0:
             scheduled_ret = self._schedule_preemption()
             # logger.info(f"running_scheduled: {len(scheduled_ret.running_scheduled)}")
@@ -1809,7 +1821,7 @@ class Scheduler:
         # logger.info(f"running_queue: {[seq_group.request_id for seq_group in self.running]}")
         if self.scheduler_config.policy == "vtc":
             return self._schedule_vtc()
-        elif self.scheduler_config.policy == "concord":
+        elif self.scheduler_config.policy in concord_support_policy:
             result = self._schedule_concord()
         elif self.scheduler_config.chunked_prefill_enabled:
             return self._schedule_chunked_prefill()
@@ -2031,6 +2043,9 @@ class Scheduler:
         if seq_group.is_finished():
             # Free cross-attention block table, if it exists
             self._free_seq_group_cross_attn_blocks(seq_group)
+            
+            if self.policy is not None:
+                self.policy.delete_seq_group(seq_group)
 
             # Add the finished requests to the finished requests list.
             # This list will be used to update the Mamba cache in the

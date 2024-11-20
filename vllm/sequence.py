@@ -17,7 +17,8 @@ from vllm.inputs.parse import is_encoder_decoder_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sampling_params import RequestType, RequestOutputKind, SamplingParams
+from vllm.request_info import RequestInfo, RequestType
+from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 
 if TYPE_CHECKING:
@@ -672,6 +673,7 @@ class SequenceGroup:
         request_id: str,
         seqs: List[Sequence],
         arrival_time: float,
+        request_info: RequestInfo,
         sampling_params: Optional[SamplingParams] = None,
         client_id: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
@@ -680,9 +682,6 @@ class SequenceGroup:
         encoder_seq: Optional[Sequence] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        request_type: Optional[RequestType] = None,
-        slo_gain: Optional[float] = 0,
-        preemption_num: Optional[int] = 0,
         priority: Optional[int] = 0,
     ) -> None:
         self.request_id = request_id
@@ -707,10 +706,14 @@ class SequenceGroup:
         self.prompt_adapter_request = prompt_adapter_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
-        self.request_type = request_type
-        self.preemtion_num = preemption_num
-        self.slo_gain = slo_gain
+        self.preemtion_num = 0
+        self.slo_gain = 0
         self.priority = priority
+        self.collection_id = request_info.collection_id
+        self.deadline = request_info.deadline
+        self.predict_output_length = request_info.output_len
+        self.request_type = request_info.request_type
+        self.request_weight = request_info.request_weight
 
         self.cached_request_output = None
 
@@ -851,6 +854,9 @@ class SequenceGroup:
         seq = self.first_seq
         if not seq.is_finished():
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
+            
+    def get_expected_num_tokens(self, time: float) -> int:
+        return min(1, time - self.arrival_time / self.deadline) * self.predict_output_length
 
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0
@@ -1394,6 +1400,7 @@ class ParallelSampleSequenceGroup(SequenceGroupBase):
     @staticmethod
     def add_request(request_id: str, engine, params, **kwargs):
         original_params = params
+        request_info = kwargs.get("request_info")
         params = copy.deepcopy(original_params)
         params.n = 1
         group = ParallelSampleSequenceGroup(request_id)
@@ -1418,6 +1425,7 @@ class ParallelSampleSequenceGroup(SequenceGroupBase):
             request_id=request_id,
             seqs=seqs,
             arrival_time=seq_group.arrival_time,
+            request_info=request_info,
             sampling_params=original_params,
             lora_request=seq_group.lora_request,
             embeddings=seq_group.embeddings,

@@ -27,6 +27,7 @@ from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.outputs import EmbeddingRequestOutput, RequestOutput
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
+from vllm.request_info import RequestInfo, RequestType
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import ExecuteModelRequest
 from vllm.transformers_utils.tokenizer import AnyTokenizer
@@ -342,10 +343,11 @@ class _AsyncLLMEngine(LLMEngine):
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
+            # # logger.info("Before execute_model_async")
             # Execute the model.
             outputs = await self.model_executor.execute_model_async(
                 execute_model_req)
-
+            # # logger.info("After execute_model_async")
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
             if self.scheduler_config.is_multi_step:
@@ -406,6 +408,7 @@ class _AsyncLLMEngine(LLMEngine):
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
 
+        # logger.info(f"Request outputs: {ctx.request_outputs}")
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -450,6 +453,7 @@ class _AsyncLLMEngine(LLMEngine):
             request_id: str,
             prompt: Optional[PromptType] = None,
             params: Optional[Union[SamplingParams, PoolingParams]] = None,
+            request_info: Optional[RequestInfo] = None,
             arrival_time: Optional[float] = None,
             lora_request: Optional[LoRARequest] = None,
             trace_headers: Optional[Mapping[str, str]] = None,
@@ -496,6 +500,7 @@ class _AsyncLLMEngine(LLMEngine):
             request_id=request_id,
             processed_inputs=processed_inputs,
             params=params,
+            request_info=request_info,
             arrival_time=arrival_time,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
@@ -784,6 +789,7 @@ class AsyncLLMEngine(EngineClient):
             all_finished = all(request_output.finished
                                for request_output in request_outputs)
 
+        # logger.info(f"all_finished: {all_finished}")
         return not all_finished
 
     def process_request_outputs(self, request_outputs) -> bool:
@@ -908,6 +914,7 @@ class AsyncLLMEngine(EngineClient):
     async def add_request(
         self,
         request_id: str,
+        request_info: RequestInfo | None,
         prompt: Optional[PromptType] = None,
         params: Optional[Union[SamplingParams, PoolingParams]] = None,
         arrival_time: Optional[float] = None,
@@ -942,6 +949,7 @@ class AsyncLLMEngine(EngineClient):
             verbose=self.log_requests,
             prompt=prompt,
             params=params,
+            request_info=request_info,
             arrival_time=arrival_time or time.time(),
             lora_request=lora_request,
             trace_headers=trace_headers,
@@ -954,6 +962,7 @@ class AsyncLLMEngine(EngineClient):
     async def generate(
         self,
         prompt: PromptType,
+        request_info: RequestInfo | None,
         sampling_params: SamplingParams,
         request_id: str,
         lora_request: Optional[LoRARequest] = None,
@@ -1026,8 +1035,10 @@ class AsyncLLMEngine(EngineClient):
             >>> # Process and return the final output
             >>> ...
         """
+        # logger.info("Generating for request_id in async_llm_engine: %s", request_id)
         async for output in await self.add_request(
                 request_id,
+                request_info, 
                 prompt,
                 sampling_params,
                 lora_request=lora_request,
