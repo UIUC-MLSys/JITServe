@@ -31,7 +31,36 @@ except ImportError:
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from benchmarks.trace import (client_simulator, send_request, RequestInput, 
                               RequestOutput, Trace, RequestFormat, BaseDataset)
-from benchmarks.benchmark_serving import BenchmarkMetrics
+
+@dataclass
+class BenchmarkMetrics:
+    completed: List[int]
+    request_num: List[int]
+    total_input: int
+    total_output: int
+    request_throughput: float
+    request_goodput: float
+    output_throughput: float
+    total_token_throughput: float
+    mean_ttft_ms: float
+    median_ttft_ms: float
+    std_ttft_ms: float
+    percentiles_ttft_ms: List[Tuple[float, float]]
+    mean_tpot_ms: float
+    median_tpot_ms: float
+    std_tpot_ms: float
+    percentiles_tpot_ms: List[Tuple[float, float]]
+    mean_itl_ms: float
+    median_itl_ms: float
+    std_itl_ms: float
+    percentiles_itl_ms: List[Tuple[float, float]]
+    # E2EL stands for end-to-end latency per request.
+    # It is the time taken on the client side from sending
+    # a request to receiving a complete response.
+    mean_e2el_ms: float
+    median_e2el_ms: float
+    std_e2el_ms: float
+    percentiles_e2el_ms: List[Tuple[float, float]]
 
 
 def calculate_metrics(
@@ -45,7 +74,8 @@ def calculate_metrics(
 ) -> Tuple[BenchmarkMetrics, List[int]]:
     actual_output_lens: List[int] = []
     total_input = 0
-    completed = 0
+    completed = [0, 0, 0]
+    request_num = [0, 0, 0]
     good_completed = 0
     itls: List[float] = []
     tpots: List[float] = []
@@ -53,6 +83,7 @@ def calculate_metrics(
     ttfts: List[float] = []
     e2els: List[float] = []
     for i in range(len(outputs)):
+        request_num[outputs[i].type] += 1
         if outputs[i].success:
             # We use the tokenizer to count the number of output tokens for all
             # serving backends instead of looking at len(outputs[i].itl) since
@@ -73,7 +104,7 @@ def calculate_metrics(
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
             e2els.append(outputs[i].latency)
-            completed += 1
+            completed[outputs[i].type] += 1
         else:
             actual_output_lens.append(0)
 
@@ -96,16 +127,17 @@ def calculate_metrics(
             if is_good_req:
                 good_completed += 1
 
-    if completed == 0:
+    if sum(completed) == 0:
         warnings.warn(
             "All requests failed. This is likely due to a misconfiguration "
             "on the benchmark arguments.",
             stacklevel=2)
     metrics = BenchmarkMetrics(
         completed=completed,
+        request_num=request_num,
         total_input=total_input,
         total_output=sum(actual_output_lens),
-        request_throughput=completed / dur_s,
+        request_throughput=sum(completed) / dur_s,
         request_goodput=good_completed / dur_s,
         output_throughput=sum(actual_output_lens) / dur_s,
         total_token_throughput=(total_input + sum(actual_output_lens)) / dur_s,
@@ -236,7 +268,13 @@ async def benchmark(
     )
 
     print("{s:{c}^{n}}".format(s=' Serving Benchmark Result ', n=50, c='='))
-    print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
+    print("{:<40} {:<10}".format("Successful requests:", sum(metrics.completed)))
+    print("{:<40} {:<10}".format("Successful latency requests:", 
+                                 f"{metrics.completed[0]}/{metrics.request_num[0]}"))
+    print("{:<40} {:<10}".format("Successful throughput requests:", 
+                                 f"{metrics.completed[1]}/{metrics.request_num[1]}"))
+    print("{:<40} {:<10}".format("Successful collective requests:", 
+                                 f"{metrics.completed[2]}/{metrics.request_num[2]}"))
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):",
                                     benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
@@ -422,7 +460,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="example.json",
+        default="example-long.json",
         help="Path to the trace file.",
     )
     parser.add_argument(

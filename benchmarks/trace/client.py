@@ -28,6 +28,7 @@ class RequestInput:
 class RequestOutput:
     def __init__(self):
         self.latency = 0.0
+        self.type = -1
         self.generated_text = ""
         self.success = False
         self.error = ""
@@ -67,12 +68,16 @@ async def send_collective_request(
     api_url = request_info.api_url
     timeout = aiohttp.ClientTimeout(total=client_deadline)
     output = RequestOutput()
+    output.type = request_info.request.request_type.value
     
     # ToT parameters
     num_thoughts = 3
     tot_round = 2
-    request_info.sampling_params.n = num_thoughts
-    request_info.sampling_params.best_of = num_thoughts
+    n = num_thoughts
+    best_of = num_thoughts
+    request_info.sampling_params.n = n
+    request_info.sampling_params.best_of = best_of
+    success_num_request = (n + 1) + (n * best_of + 1) * (tot_round - 1)
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
@@ -88,9 +93,11 @@ async def send_collective_request(
         most_recent_timestamp = st
         
         async def generate_thoughts(session, api_url, payload) -> Tuple[bool, List[str]]:
+            new_payload = payload.copy()
+            new_payload["sampling_params"]["n"] = 3
             ttft = 0.0
             try:
-                async with session.post(url=api_url, json=payload) as response:
+                async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
                         async for chunk_bytes in response.content:
                             chunk_bytes = chunk_bytes.strip()
@@ -188,7 +195,7 @@ async def send_collective_request(
                         choices.extend(generate_choices)                
                 if not output.success:
                     break
-                        
+                    
                 for choice in choices:
                     generated_text += choice
                     num_requests += 1
@@ -206,7 +213,10 @@ async def send_collective_request(
             
             generated_text = thoughts[0]
             output.generated_text = generated_text
-            output.success = True
+            if num_requests == success_num_request:
+                output.success = True
+            else:
+                output.success = False
             output.collection_num_requests = num_requests
             output.latency = time.perf_counter() - st
         except Exception:
@@ -221,7 +231,7 @@ async def send_collective_request(
 
 async def send_request(
     request_info: RequestInput, 
-    client_deadline: int = 10,
+    client_deadline: int = 20,
     pbar: Optional[tqdm] = None
     ) -> RequestOutput:
     '''
@@ -230,6 +240,7 @@ async def send_request(
     api_url = request_info.api_url
     timeout = aiohttp.ClientTimeout(total=client_deadline)
     output = RequestOutput()
+    output.type = request_info.request.request_type.value
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
             "request_info": request_info.request.to_dict(),
@@ -299,16 +310,16 @@ async def client_simulator(
     '''
     start_time = time.perf_counter()
     tasks = []
-    
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests):
         # request_format = RequestFormat.from_dict(request)
-        # TODO            
+        request.deadline /= 1000           
         request_info = RequestInput(request, sampling_params, client_id, api_url)
+        deadline = int(request.deadline)
         if request.request_type == RequestType.Collective:
-            tasks.append(asyncio.create_task(send_collective_request(request_info, client_deadline, pbar)))
+            tasks.append(asyncio.create_task(send_collective_request(request_info, deadline, pbar)))
         else:
-            tasks.append(asyncio.create_task(send_request(request_info, client_deadline, pbar)))
+            tasks.append(asyncio.create_task(send_request(request_info, deadline, pbar)))
         
     latency = time.perf_counter() - start_time
     outputs: List[RequestOutput] = await asyncio.gather(*tasks)
