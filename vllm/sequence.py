@@ -20,6 +20,9 @@ from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.request_info import RequestInfo, RequestType
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 if TYPE_CHECKING:
     from vllm.inputs import SingletonInputs
@@ -856,7 +859,7 @@ class SequenceGroup:
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
             
     def get_expected_num_tokens(self, time: float) -> int:
-        return min(1, time - self.arrival_time / self.deadline) * self.predict_output_length
+        return int(min(1, time - self.arrival_time / self.deadline) * self.predict_output_length)
 
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0

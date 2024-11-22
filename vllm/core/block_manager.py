@@ -143,30 +143,13 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             return AllocStatus.OK
         else:
             return AllocStatus.LATER   
-    
-    def can_allocate_batch(self,
-                           seq_group_list: List[SequenceGroup],
-                           allocated_seq_groups: List[SequenceGroup] = None,
-                           num_lookahead_slots: int = 0) -> Tuple[AllocStatus, int]:
-        """Determine if there is enough space in the GPU KV cache to allocate
-        the given sequence group list.
-
-        This method is used to determine if the given sequence group can be
-        allocated in the GPU KV cache. The method returns a status indicating
-        whether the allocation can be done immediately, later, or never, and a number indicating
-        how many sequence groups can be allocated for the given sequence group list.
-
-        Args:
-            seq_group (SequenceGroup): The sequence group to allocate.
-            num_lookahead_slots (int, optional): The number of lookahead slots
-                used in speculative decoding. Defaults to 0.
-
-        Returns:
-            AllocStatus: The status of the allocation.
-        """
+          
+    def compute_free_blocks(self,
+                                seq_group_list: List[SequenceGroup], 
+                                num_lookahead_slots: int = 0) -> int:
         num_free_gpu_blocks = self.block_allocator.get_num_total_blocks(device=Device.GPU)
         
-        for seq_group in allocated_seq_groups:
+        for seq_group in seq_group_list:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 num_required_blocks = BlockTable.get_num_required_blocks(
                     seq.get_token_ids(),
@@ -185,7 +168,28 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
                                             self.max_block_sliding_window)
                 num_free_gpu_blocks -= num_required_blocks
         
-        num_allocatable_seq_groups = 0
+        return num_free_gpu_blocks
+    
+    def can_allocate_batch(self,
+                           seq_group_list: List[SequenceGroup],
+                           num_free_gpu_blocks: int,
+                           num_lookahead_slots: int = 0) -> Tuple[AllocStatus, int]:
+        """Determine if there is enough space in the GPU KV cache to allocate
+        the given sequence group list.
+
+        This method is used to determine if the given sequence group can be
+        allocated in the GPU KV cache. The method returns a status indicating
+        whether the allocation can be done immediately, later, or never, and a number indicating
+        how many sequence groups can be allocated for the given sequence group list.
+
+        Args:
+            seq_group (SequenceGroup): The sequence group to allocate.
+            num_lookahead_slots (int, optional): The number of lookahead slots
+                used in speculative decoding. Defaults to 0.
+
+        Returns:
+            AllocStatus: The status of the allocation.
+        """
         
         for seq_group in seq_group_list:
             check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
@@ -205,11 +209,11 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
                 raise NotImplementedError("Sliding window is not supported in batch allocation.")
             
             if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
-                num_allocatable_seq_groups += 1    
+                num_free_gpu_blocks -= num_required_blocks   
             else:
-                return AllocStatus.LATER, num_allocatable_seq_groups
+                return AllocStatus.LATER, num_free_gpu_blocks
         
-        return AllocStatus.OK, num_allocatable_seq_groups
+        return AllocStatus.OK, num_free_gpu_blocks
     
 
     def _allocate_sequence(self, seq: Sequence) -> BlockTable:
