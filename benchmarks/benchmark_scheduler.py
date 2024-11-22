@@ -242,7 +242,7 @@ async def benchmark(
                     input_requests=input_requests,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=10,
+                    client_deadline=60,
                     api_url=api_url,
                     pbar=pbar,
                 )

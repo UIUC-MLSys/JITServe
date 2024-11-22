@@ -50,10 +50,9 @@ async def generate(request: Request) -> Response:
     request_dict = await request.json()
     request_info = request_dict.pop("request_info", {})
     stream = request_dict.pop("stream", False)
-    client_id = request_info.get("client_id", 0)
+    client_id = request_dict.get("client_id", 0)
     
     sampling_params = SamplingParams(**request_dict.pop("sampling_params"))
-    logger.info("samling_params: %s", sampling_params)
     
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id

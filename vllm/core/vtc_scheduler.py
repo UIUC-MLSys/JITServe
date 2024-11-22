@@ -174,9 +174,9 @@ class VTCReqQueue:
                                      if req not in can_run_list and req not in abort_list]
             # self.waiting_req_list = [req for req in self.waiting_req_list
             #                          if req not in can_run_list]
-            return can_run_list
+            return can_run_list, abort_list
         else:
-            return None
+            return None, []
 
     
     def update_counter(self, current_batch: Deque[SequenceGroup]):
