@@ -1,3 +1,4 @@
+import asyncio
 from enum import Enum, IntEnum
 from typing import List, Dict, Any
 
@@ -31,6 +32,7 @@ class RequestInfo:
         collection_id: int,  # ID of the collection the request belongs to
         deadline: int,  # Deadline for the request to be processed
         output_len: int,  # The expected output length for the request
+        prediction_task: asyncio.Task = None  # Task for prediction
     ):
         # Initialize the attributes with the provided values
         self.request_type = request_type
@@ -41,6 +43,7 @@ class RequestInfo:
         # Set the request weight: HIGH for LATENCY requests, LOW for others
         self.request_weight = RequestWeight.HIGH if \
                     request_type == RequestType.LATENCY else RequestWeight.LOW
+        self.prediction_task = prediction_task
 
     @classmethod
     def from_json(cls, json_obj: Dict[str, Any]) -> "RequestInfo":

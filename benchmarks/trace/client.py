@@ -5,6 +5,7 @@ import random
 import sys
 import time
 import traceback
+from copy import deepcopy
 from tqdm import tqdm
 from typing import List, Tuple, AsyncGenerator, Optional
 from vllm import SamplingParams
@@ -59,7 +60,7 @@ async def get_request(
 
 async def send_collective_request(
     request_info: RequestInput, 
-    client_deadline: int = 10,
+    client_deadline: float = 20,
     pbar: Optional[tqdm] = None
     ) -> RequestOutput:
     '''
@@ -93,8 +94,9 @@ async def send_collective_request(
         most_recent_timestamp = st
         
         async def generate_thoughts(session, api_url, payload) -> Tuple[bool, List[str]]:
-            new_payload = payload.copy()
+            new_payload = deepcopy(payload)
             new_payload["sampling_params"]["n"] = 3
+            # new_payload["request_info"]["deadline"] = new_payload["request_info"]["deadline"] / 8 * 3
             ttft = 0.0
             try:
                 async with session.post(url=api_url, json=new_payload) as response:
@@ -138,9 +140,10 @@ async def send_collective_request(
             for i, choice in enumerate(choices):
                 value_prompt += f"Choice {i+1}: {choice}\n"
             
-            new_payload = payload.copy()
+            new_payload = deepcopy(payload)
             new_payload["request_info"]["prompt"] = value_prompt
             new_payload["sampling_params"]["n"] = 1
+            # new_payload["request_info"]["deadline"] /= 8
             try:
                 async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
@@ -195,7 +198,8 @@ async def send_collective_request(
                         choices.extend(generate_choices)                
                 if not output.success:
                     break
-                    
+                
+                print(f"Round {round+1}: {choices}")    
                 for choice in choices:
                     generated_text += choice
                     num_requests += 1
@@ -231,7 +235,7 @@ async def send_collective_request(
 
 async def send_request(
     request_info: RequestInput, 
-    client_deadline: int = 20,
+    client_deadline: float = 20,
     pbar: Optional[tqdm] = None
     ) -> RequestOutput:
     '''
@@ -313,9 +317,12 @@ async def client_simulator(
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests):
         # request_format = RequestFormat.from_dict(request)
-        request.deadline /= 1000           
+        request.deadline /= 100           
         request_info = RequestInput(request, sampling_params, client_id, api_url)
-        deadline = int(request.deadline)
+        deadline = request.deadline
+        # if client_deadline is not None:
+        #     deadline = min(client_deadline, request.deadline)
+        #     request.deadline = deadline
         if request.request_type == RequestType.Collective:
             tasks.append(asyncio.create_task(send_collective_request(request_info, deadline, pbar)))
         else:
@@ -323,5 +330,8 @@ async def client_simulator(
         
     latency = time.perf_counter() - start_time
     outputs: List[RequestOutput] = await asyncio.gather(*tasks)
+    
+    # for output in outputs:
+    #     print(f"Request Generated text: {output.generated_text}")
     
     return outputs

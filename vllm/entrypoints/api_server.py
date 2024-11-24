@@ -9,7 +9,7 @@ import asyncio
 import json
 import ssl
 from argparse import Namespace
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional, Tuple
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -18,6 +18,7 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.launcher import serve_http
 from vllm.logger import init_logger
+from vllm.prediction.prediction import load_model, async_predict
 from vllm.request_info import RequestInfo
 from vllm.sampling_params import SamplingParams
 from vllm.usage.usage_lib import UsageContext
@@ -30,6 +31,9 @@ logger = init_logger("vllm.entrypoints.api_server")
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
 app = FastAPI()
 engine = None
+use_prediction = False
+prediction_model = None
+prediction_tokenizer = None
 
 
 @app.get("/health")
@@ -58,10 +62,15 @@ async def generate(request: Request) -> Response:
     request_info["client_id"] = client_id
     request_info = RequestInfo.from_json(request_info)
     request_id = random_uuid()
+    
+    if use_prediction:
+        prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
+                                                            prediction_model, [prompt]))
+        request_info.prediction_task = prediction_task
 
     assert engine is not None
     results_generator = engine.generate(prompt, request_info, 
-                                        sampling_params, request_id)
+                                        sampling_params, request_id, client_id=request_info.client_id)
     results_generator = iterate_with_cancellation(
         results_generator, is_cancelled=request.is_disconnected)
 
@@ -109,13 +118,33 @@ async def init_app(
     app = build_app(args)
 
     global engine
+    global use_prediction
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
+    if engine_args.scheduling_policy == 'slo' or engine_args.scheduling_policy == 'sjf':
+        use_prediction = True
     engine = (llm_engine
               if llm_engine is not None else AsyncLLMEngine.from_engine_args(
                   engine_args, usage_context=UsageContext.API_SERVER))
 
     return app
+
+
+async def init_prediction_model(
+    args: Namespace,
+) -> None:
+    model_path = args.prediction_model_path
+    tokenizer_path = args.prediction_tokenizer_path
+
+    global prediction_model
+    global prediction_tokenizer
+
+    prediction_model, prediction_tokenizer = load_model(model_path, tokenizer_path)
+    
+    assert prediction_model is not None
+    assert prediction_tokenizer is not None
+
+    return
 
 
 async def run_server(args: Namespace,
@@ -124,6 +153,7 @@ async def run_server(args: Namespace,
     logger.info("vLLM API server version %s", VLLM_VERSION)
     logger.info("args: %s", args)
 
+    await init_prediction_model(args)
     app = await init_app(args, llm_engine)
     assert engine is not None
 
@@ -164,6 +194,16 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="FastAPI root_path when app is behind a path based routing proxy")
+    parser.add_argument(
+        "--prediction-model-path",
+        type=str,
+        default='/home/exouser/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
+        help="Path to the prediction model")
+    parser.add_argument(
+        "--prediction-tokenizer-path",
+        type=str,
+        default='/home/exouser/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
+        help="Path to the prediction tokenizer")
     parser.add_argument("--log-level", type=str, default="debug")
     parser = AsyncEngineArgs.add_cli_args(parser)
     args = parser.parse_args()

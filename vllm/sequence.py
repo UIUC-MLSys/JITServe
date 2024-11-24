@@ -1,4 +1,5 @@
 """Sequence and its related classes."""
+import asyncio
 import copy
 import enum
 from abc import ABC, abstractmethod
@@ -717,8 +718,17 @@ class SequenceGroup:
         self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
         self.request_weight = request_info.request_weight
+        self.prediction_task = request_info.prediction_task
 
         self.cached_request_output = None
+        
+        if self.prediction_task is not None:
+            asyncio.create_task(self._handle_prediction_task())
+
+    async def _handle_prediction_task(self):
+        result = await self.prediction_task
+        self.predict_output_length = result
+        logger.info(f"Predicted output length: {result} for seq_group {self.request_id}")
 
     @property
     def prompt(self) -> Optional[str]:

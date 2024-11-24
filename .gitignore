@@ -205,5 +205,8 @@ benchmarks/dataset
 benchmarks/*.json
 benchmarks/*.csv
 
+# Benchmark results
+vllm/entrypoints/result-*.txt
+
 # Linting
 actionlint
