@@ -108,6 +108,7 @@ async def send_collective_request(
                             chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                             data = json.loads(chunk[:-1])
                             choices = [x for x in data["text"]]
+                            # print(f"Choices: {choices}")
                             timestamp = time.perf_counter()
                             # First token
                             if ttft == 0.0:
@@ -155,6 +156,7 @@ async def send_collective_request(
                             chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                             data = json.loads(chunk[:-1])
                             value = data["text"][0]
+                            # print(f"Value: {value}")
                             
                             # To ensure that the simulation results remain unaffected by the behavior of the value model,
                             # which may sometimes fail to generate values (e.g., unexpected response formats),
@@ -199,7 +201,7 @@ async def send_collective_request(
                 if not output.success:
                     break
                 
-                print(f"Round {round+1}: {choices}")    
+                  
                 for choice in choices:
                     generated_text += choice
                     num_requests += 1
@@ -317,7 +319,7 @@ async def client_simulator(
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests):
         # request_format = RequestFormat.from_dict(request)
-        request.deadline /= 100           
+        request.deadline /= 1000           
         request_info = RequestInput(request, sampling_params, client_id, api_url)
         deadline = request.deadline
         # if client_deadline is not None:

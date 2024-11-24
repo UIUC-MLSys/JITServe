@@ -63,10 +63,10 @@ async def generate(request: Request) -> Response:
     request_info = RequestInfo.from_json(request_info)
     request_id = random_uuid()
     
-    if use_prediction:
-        prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
-                                                            prediction_model, [prompt]))
-        request_info.prediction_task = prediction_task
+    # if use_prediction:
+    #     prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
+    #                                                         prediction_model, [prompt]))
+    #     request_info.prediction_task = prediction_task
 
     assert engine is not None
     results_generator = engine.generate(prompt, request_info, 

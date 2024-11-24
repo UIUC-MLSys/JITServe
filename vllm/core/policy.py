@@ -87,6 +87,25 @@ class BasePolicy(ABC):
         raise NotImplementedError
 
 
+class FCFSPolicy(BasePolicy):
+    '''
+    First-Come, First-Served (FCFS) scheduling policy.
+    This policy schedules sequence groups based on the order of arrival.
+    '''
+    def __init__(
+        self,
+        schedule_interval: int = 20,
+    ) -> None:
+        super().__init__(schedule_interval)
+        logger.info("FCFS policy is used")
+    
+    def get_priority(self, seq_group: SequenceGroup) -> float:
+        '''
+        Calculate the priority based on the order of arrival.
+        '''
+        return seq_group.arrival_time
+
+
 class SJFPolicy(BasePolicy):
     '''
     Shortest Job First (SJF) scheduling policy.

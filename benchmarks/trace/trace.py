@@ -33,7 +33,7 @@ class RequestFormat:
         request_type: RequestType,
         collection_id: int,
         deliver_time: int,
-        deadline: int,
+        deadline: float,
         priority: int,
     ) -> None:
         self.prompt = prompt
