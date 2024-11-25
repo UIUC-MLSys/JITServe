@@ -14,9 +14,17 @@ class RequestType(IntEnum):
 # Enum class to define the weight of a request
 # HIGH: Request with high priority (used for latency-sensitive requests)
 # LOW: Request with low priority (used for throughput-sensitive or collective requests)
-class RequestWeight(Enum):
+class RequestTypeWeight(Enum):
     LOW = 1  # Low priority
     HIGH = 2  # High priority
+    
+class RequestPhaseWeight(Enum):
+    PREFILL = 1
+    DECODE = 2
+    
+def service_compute(prefilling_length: int, decoding_length: int) -> float:
+    return prefilling_length * RequestPhaseWeight.PREFILL.value + \
+        decoding_length * RequestPhaseWeight.DECODE.value
 
 # Class to hold information about a request
 class RequestInfo:
@@ -41,8 +49,8 @@ class RequestInfo:
         self.deadline = deadline
         self.output_len = output_len
         # Set the request weight: HIGH for LATENCY requests, LOW for others
-        self.request_weight = RequestWeight.HIGH if \
-                    request_type == RequestType.LATENCY else RequestWeight.LOW
+        self.request_weight = RequestTypeWeight.HIGH if \
+                    request_type == RequestType.LATENCY else RequestTypeWeight.LOW
         self.prediction_task = prediction_task
 
     @classmethod

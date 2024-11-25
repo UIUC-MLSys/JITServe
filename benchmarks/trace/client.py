@@ -255,7 +255,6 @@ async def send_request(
             "stream": False
         }
         # output.prompt_len = request_info.prompt_len
-
         generated_text = ""
         ttft = 0.0
         latency = 0.0

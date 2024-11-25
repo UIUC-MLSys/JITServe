@@ -566,6 +566,10 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         watermark_blocks = 0
         if device == Device.GPU:
             watermark_blocks = self.watermark_blocks
+            
+        if device == Device.CPU:
+            if num_blocks_touched / self.block_allocator.get_num_total_blocks(device) > 0.1:
+                return AllocStatus.LATER
 
         if self.block_allocator.get_num_total_blocks(
                 device) < num_blocks_touched:

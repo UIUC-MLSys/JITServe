@@ -18,7 +18,7 @@ from vllm.inputs.parse import is_encoder_decoder_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.request_info import RequestInfo, RequestType
+from vllm.request_info import RequestType, RequestInfo, RequestPhaseWeight, service_compute
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 from vllm.logger import init_logger
@@ -293,6 +293,12 @@ class SequenceData(msgspec.Struct,
 
     def get_len(self) -> int:
         return len(self._output_token_ids) + len(self._prompt_token_ids)
+    
+    def get_serving_len(self) -> Tuple[int, int]:
+        '''
+        Return the serving length (prefilling token length, decoding token length)of the sequence.
+        '''
+        return (min(self._num_computed_tokens, len(self.prompt_token_ids)), len(self._output_token_ids))
 
     def get_prompt_len(self) -> int:
         return len(self._prompt_token_ids)
@@ -592,6 +598,9 @@ class Sequence:
 
     def get_prompt_len(self) -> int:
         return self.data.get_prompt_len()
+    
+    def get_serving_len(self) -> Tuple[int, int]:
+        return self.data.get_serving_len()
 
     def get_output_len(self) -> int:
         return self.data.get_output_len()
@@ -710,11 +719,12 @@ class SequenceGroup:
         self.prompt_adapter_request = prompt_adapter_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
-        self.preemtion_num = 0
+        self.num_cumulative_preemption = 0
         self.slo_gain = 0
         self.priority = priority
         self.collection_id = request_info.collection_id
         self.deadline = request_info.deadline
+        self.prefilling_deadline = request_info.deadline / 10
         self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
         self.request_weight = request_info.request_weight
@@ -868,8 +878,19 @@ class SequenceGroup:
         if not seq.is_finished():
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
             
-    def get_expected_num_tokens(self, time: float) -> int:
-        return int(min(1, time - self.arrival_time / self.deadline) * self.predict_output_length)
+    def get_expected_num_tokens(self, time: float) -> Tuple[int, int]:
+        expected_prompt_length = min(1, time - self.arrival_time / self.prefilling_deadline) * len(self.prompt_token_ids)
+        expected_output_length = min(1, time - self.prefilling_deadline / self.deadline) * self.predict_output_length
+        return max(int(expected_prompt_length), 0), max(int(expected_output_length), 0)
+    
+    def get_real_slo_gain(self) -> float:
+        real_prefilling_length, real_decoding_length = self.seqs[0].get_serving_len()
+        return service_compute(real_prefilling_length, real_decoding_length)
+    
+    def get_max_slo_gain(self) -> float:
+        max_prefilling_length = len(self.prompt_token_ids)
+        max_decoding_length = self.predict_output_length
+        return service_compute(max_prefilling_length, max_decoding_length)
 
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0

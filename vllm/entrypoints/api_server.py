@@ -67,6 +67,7 @@ async def generate(request: Request) -> Response:
     #     prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
     #                                                         prediction_model, [prompt]))
     #     request_info.prediction_task = prediction_task
+    #     request_info.output_len = await prediction_task
 
     assert engine is not None
     results_generator = engine.generate(prompt, request_info, 
