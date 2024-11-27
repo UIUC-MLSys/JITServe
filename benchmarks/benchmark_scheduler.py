@@ -161,6 +161,8 @@ def calculate_metrics(
             if output_len > 1:
                 for req_latency, req_ttft, req_output_len in \
                     zip(outputs[i].request_latency, outputs[i].request_ttft, output_len_list):
+                    if req_output_len == 1:
+                        continue
                     tbt = (req_latency - req_ttft) / (req_output_len - 1)
                     request_tbt.append(tbt)
             # Note: if output_len <= 1, we regard tbt as 0 for goodput
@@ -227,7 +229,7 @@ async def benchmark(
     max_concurrency: Optional[int],
     max_output_len: int,
 ):
-    requests = trace
+    requests = [trace[0]]
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
@@ -352,7 +354,7 @@ async def benchmark(
         "request_goodput": metrics.request_goodput,
         "output_throughput": metrics.output_token_throughput,
         "total_token_throughput": metrics.total_token_throughput,
-        "errors": [output.error for output in outputs],
+        # "errors": [output.error for output in outputs],
     }
 
     def process_one_metric(
@@ -471,13 +473,16 @@ def main(args: argparse.Namespace):
 
         # Save to file
         base_model_id = model_id.split("/")[-1]
-        file_name = f"{base_model_id}-{current_dt}.json"  #noqa
-        if args.result_filename:
-            file_name = args.result_filename
-        if args.result_dir:
-            file_name = os.path.join(args.result_dir, file_name)
+        
+        file_dir = f"poisson-{args.poisson}" if args.poisson is not None else "BurstGPT"
+        file_dir = f"result/{file_dir}"
+        
+        if not os.path.exists(file_dir):
+            os.makedirs(file_dir)
+        file_name = f"{file_dir}/{base_model_id}-{args.policy}-{'chunked' if args.chunked else 'normal'}.json"
+        print(f"Saving benchmark results to {file_name}")
         with open(file_name, "w", encoding='utf-8') as outfile:
-            json.dump(result_json, outfile)
+            json.dump(result_json, outfile, indent=4, ensure_ascii=False)
 
 
 if __name__ == '__main__':
@@ -515,6 +520,22 @@ if __name__ == '__main__':
         "to execute at a time. This means that when used in combination, the "
         "actual request rate may be lower than specified with --request-rate, "
         "if the server is not processing requests fast enough to keep up."
+    )
+    parser.add_argument(
+        "--policy",
+        type=str,
+        required=True,
+        help="Policy of the scheduler.",
+    )
+    parser.add_argument(
+        "--poisson",
+        type=int,
+        help="Specify to use poisson distribution for request rate.",
+    )
+    parser.add_argument(
+        "--chunked",
+        action="store_true",
+        help="Specify to use chunked prefill for server.",
     )
     parser.add_argument(
         "--model",
@@ -584,6 +605,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--save-result",
         action="store_true",
+        default=True,
         help="Specify to save benchmark results to a json file",
     )
     parser.add_argument(

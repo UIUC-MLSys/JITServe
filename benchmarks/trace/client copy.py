@@ -124,8 +124,8 @@ async def send_collective_request(
             input_prompt = prompt_format(thought)
             input_length = len(input_prompt)
             new_payload['request_info']['prompt'] = input_prompt
-            new_payload["sampling_params"]["n"] = 3
-            # new_payload["request_info"]["deadline"] = new_payload["request_info"]["deadline"] / 8 * 3
+            new_payload["sampling_params"]["n"] = 1
+            new_payload["request_info"]["deadline"] = new_payload["request_info"]["deadline"] / 8 * 3
             
             ttft = 0.0
             latency = 0.0
@@ -133,22 +133,20 @@ async def send_collective_request(
             try:
                 async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
-                        choices = ['' for _ in range(n)]
+                        choice = ''
                         async for chunk_bytes in response.content:
                             chunk_bytes = chunk_bytes.strip()
                             if not chunk_bytes:
                                 continue
                             chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                             data = json.loads(chunk[:-1])
-                            for i, x in enumerate(data["text"]):
-                                choices[i] += x
+                            choice += data["text"][0]
                             
-                            timestamp = time.perf_counter()
                             # First token
                             if ttft == 0.0:
                                 ttft = time.perf_counter() - st
                         latency = time.perf_counter() - st
-                        choices = [parse_output(choice, input_length) for choice in choices]
+                        choice = parse_output(choice, input_length)
                     else:
                         return (False, '', [], ttft, 0)
             except Exception:
@@ -156,7 +154,7 @@ async def send_collective_request(
                 error = "".join(traceback.format_exception(*exc_info))
                 return (False, '', [], ttft, latency)
             
-            return (True, input_prompt, choices, ttft, latency)
+            return (True, input_prompt, choice, ttft, latency)
         
         async def value_thoughts(session, api_url, choices, payload) -> Tuple[bool, str, 
                                                                               str, float, float]:
@@ -179,7 +177,7 @@ async def send_collective_request(
             new_payload["request_info"]["prompt"] = value_prompt
             new_payload["sampling_params"]["n"] = 1
             input_length = len(new_payload['request_info']['prompt'])
-            # new_payload["request_info"]["deadline"] /= 8
+            new_payload["request_info"]["deadline"] /= 8
             
             st = time.perf_counter()
             ttft = 0.0
@@ -226,25 +224,26 @@ async def send_collective_request(
                 for thought in thoughts:
                     if round > 0:
                         thought += "\nPlease review and revise the response."
-                    tasks.append(generate_thoughts(session, api_url, thought, payload))
+                    for _ in range(n):
+                        tasks.append(generate_thoughts(session, api_url, thought, payload))
                 
                 results = await asyncio.gather(*tasks)  
-                for generate_success, generate_input, generate_choices, \
+                for generate_success, generate_input, generate_choice, \
                     generate_ttft, generate_latency in results:
                     if not generate_success:
                         output.error = "Generate thoughts failed"
                         output.success = False
                         break
                     else:
-                        choices.extend(generate_choices) 
+                        choices.append(generate_choice) 
                         if ttft == 0.0:
                             ttft = generate_ttft
                             output.task_ttft = ttft
-                        output.request_ttft.extend([generate_ttft]*n)
-                        output.request_latency.extend([generate_latency]*n) 
-                        output.request_input.extend([generate_input]*n)
-                        output.request_output.extend(generate_choices)
-                        num_requests += len(generate_choices)
+                        output.request_ttft.append(generate_ttft)
+                        output.request_latency.append(generate_latency) 
+                        output.request_input.append(generate_input)
+                        output.request_output.append(generate_choice)
+                        num_requests += 1
                 if not output.success:
                     break
                 # value thoughts and select the top-k
@@ -315,7 +314,7 @@ async def send_request(
             "request_info": request_info.request.to_dict(),
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
-            "stream": True
+            "stream": False
         }
         # output.prompt_len = request_info.prompt_len
         generated_text = ""
@@ -333,7 +332,7 @@ async def send_request(
                         chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                         # TODO chunk parsing
                         # remove EOS token
-                        data = json.loads(chunk[:-1])
+                        data = json.loads(chunk)
                         timestamp = time.perf_counter()
                         # First token
                         if ttft == 0.0:

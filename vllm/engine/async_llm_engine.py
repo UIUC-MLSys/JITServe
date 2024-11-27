@@ -326,6 +326,10 @@ class _AsyncLLMEngine(LLMEngine):
             last_sampled_token_ids = \
                 self._get_last_sampled_token_ids(virtual_engine)
 
+            # logger.info(f"got length of running queue: {scheduler_outputs.running_queue_size}")
+            # logger.info(f"got length of seq_group_metadata_list: {len(seq_group_metadata_list)}")
+            # if len(seq_group_metadata_list) > 0:
+            #     logger.info(f"First seq_group_metadata_list: {seq_group_metadata_list[0].request_id}")
             execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -347,7 +351,7 @@ class _AsyncLLMEngine(LLMEngine):
             # Execute the model.
             outputs = await self.model_executor.execute_model_async(
                 execute_model_req)
-            # # logger.info("After execute_model_async")
+            # logger.info(f"got length of outputs: {len(outputs)}")
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
             if self.scheduler_config.is_multi_step:

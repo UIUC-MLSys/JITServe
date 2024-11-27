@@ -125,6 +125,10 @@ class SchedulerContext:
                       scheduler_outputs: SchedulerOutputs, is_async: bool,
                       is_last_step: bool,
                       is_first_step_output: Optional[bool]):
+        # logger.info(f"metadata: {len(seq_group_metadata_list)} to output cache")
+        # if len(seq_group_metadata_list) != 0:
+        #     logger.info(f"outputs: {len(outputs[0].outputs)}")
+        #     assert len(outputs[0].outputs) == len(seq_group_metadata_list)
         self.output_queue.append(
             OutputData(outputs=outputs,
                        seq_group_metadata_list=seq_group_metadata_list,
@@ -1075,10 +1079,20 @@ class LLMEngine:
             # (since later we will process all of the rest)
             (outputs, seq_group_metadata_list, scheduler_outputs, is_async,
              is_last_step, is_first_step_output, skip) = ctx.output_queue[0]
+            # logger.info(f"Processing {len(seq_group_metadata_list)} outputs above")
+            # if len(seq_group_metadata_list) > 0:
+            #     logger.info(f"Seq group metadata list: {seq_group_metadata_list[0].request_id}")
+            # logger.info(f"Outputs: {len(outputs)}")
         else:
             (outputs, seq_group_metadata_list, scheduler_outputs, is_async,
              is_last_step, is_first_step_output,
              skip) = ctx.output_queue.popleft()
+            
+            # logger.info(f"Processing {len(seq_group_metadata_list)} outputs below")
+            # if len(seq_group_metadata_list) > 0:
+            #     logger.info(f"Seq group metadata list: {seq_group_metadata_list[0].request_id}")
+            #     logger.info(f"Outputs: {len(outputs[0].outputs)}")
+            #     logger.info(f"Skip: {skip}")
 
         # Sanity check
         assert len(seq_group_metadata_list) == len(

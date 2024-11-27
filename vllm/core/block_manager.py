@@ -83,7 +83,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             # we may need 2 blocks when the second block only holds 1 token.
             self.max_block_sliding_window = num_blocks + 1
 
-        self.watermark = watermark
+        self.watermark = 0.05
         assert watermark >= 0.0
 
         self.enable_caching = enable_caching
@@ -566,14 +566,15 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         watermark_blocks = 0
         if device == Device.GPU:
             watermark_blocks = self.watermark_blocks
-            
-        if device == Device.CPU:
-            if num_blocks_touched / self.block_allocator.get_num_total_blocks(device) > 0.1:
-                return AllocStatus.LATER
 
         if self.block_allocator.get_num_total_blocks(
                 device) < num_blocks_touched:
             return AllocStatus.NEVER
+        elif device == Device.CPU:
+            if num_blocks_touched / self.block_allocator.get_num_total_blocks(device) > 0.1:
+                return AllocStatus.LATER
+            if seq_group.num_cumulative_preemption > 3:
+                return AllocStatus.LATER
         elif self.block_allocator.get_num_free_blocks(
                 device) - num_blocks_touched >= watermark_blocks:
             return AllocStatus.OK

@@ -721,7 +721,7 @@ class Scheduler:
                 # Do preemption
                 if do_preempt:
                     preempted_mode = self._preempt(victim_seq_group,
-                                                   blocks_to_swap_out)
+                                                   blocks_to_swap_out, preemption_mode=PreemptionMode.SWAP)
                     if preempted_mode == PreemptionMode.RECOMPUTE:
                         preempted.append(victim_seq_group)
                     else:
@@ -1240,6 +1240,9 @@ class Scheduler:
                 elif preempt_mode == PreemptionMode.RECOMPUTE:
                     running_preempt_queue.append(vseq_group)
                 force_preemption_count += 1
+                
+                if force_preemption_count >= 10:
+                    break
             
             # No more victim sequence groups can be swapped out, so we stop the preemption
             # Or if running queue is empty, we stop the preemption, though the sequence group
@@ -1253,12 +1256,14 @@ class Scheduler:
             if can_allocate == AllocStatus.OK:
                 # Append slots for the sequence group
                 if seq_group.is_prefill():
+                    logger.info(f"Scheduled prefill sequence group: {seq_group.request_id}")
                     concord_prefill_output = self._schedule_prefills_v2(seq_group, 
                                                                         num_new_tokens, num_new_seqs, 
                                                                         num_lookahead_slots, budget, enable_chunking)
                     prefill_result.seq_groups.append(concord_prefill_output.seq_group)
                     self.waiting.remove(seq_group)
                 else:
+                    logger.info(f"Swapping in sequence group: {seq_group.request_id}")
                     concord_swappedin_output = self._schedule_swapped_v2(seq_group, 
                                                                          num_new_tokens, num_new_seqs,
                                                                          num_lookahead_slots, budget, enable_chunking)
@@ -2376,6 +2381,8 @@ class Scheduler:
                 preemption_mode, self.num_cumulative_preemption + 1)
         self.num_cumulative_preemption += 1
         seq_group.num_cumulative_preemption += 1
+        logger.info(f"Sequence group {seq_group.request_id} is preempted by {preemption_mode} mode.")
+        logger.info(f"Sequence group {seq_group.request_id} is prefill: {seq_group.is_prefill()}.")
         
         if self.num_cumulative_preemption % 100 == 0:
             logger.info(f"num_cumulative_preemption: {self.num_cumulative_preemption}")

@@ -266,7 +266,7 @@ class SLOPoilicy(BasePolicy):
         # logger.info(f"Request {seq_group.request_id} SLO: {curr_slo} -> {next_slo} (Desire: {desire_slo})")
             
         # Weighted decay, this is for different request type
-        delta_slo = (next_slo - curr_slo) * seq_group.request_weight.value
+        delta_slo = next_slo - curr_slo
         
         # The change in SLO gain from the current iteration to the next iteration
         delta_slo =  delta_slo / self.adjust_slo_priority(seq_group, curr_slo, desire_slo)

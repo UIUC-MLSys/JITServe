@@ -9,7 +9,8 @@ import asyncio
 import json
 import ssl
 from argparse import Namespace
-from typing import Any, AsyncGenerator, Optional, Tuple
+import threading
+from typing import Any, AsyncGenerator, Optional, Tuple, List, Dict, Set
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -17,9 +18,10 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.launcher import serve_http
+from vllm.graph.similarity import Graph, ToTStructure, predict_stage_ratio
 from vllm.logger import init_logger
 from vllm.prediction.prediction import load_model, async_predict
-from vllm.request_info import RequestInfo
+from vllm.request_info import RequestInfo, RequestType
 from vllm.sampling_params import SamplingParams
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import (FlexibleArgumentParser, iterate_with_cancellation,
@@ -31,9 +33,17 @@ logger = init_logger("vllm.entrypoints.api_server")
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
 app = FastAPI()
 engine = None
+
+# Prediction model
 use_prediction = False
 prediction_model = None
 prediction_tokenizer = None
+
+# Graph matching
+use_graph_matching = False
+graph_matching_lock = threading.Lock()
+collection_graph_set: Set[Graph] = set()
+collection_graph_unfinished_dict: Dict[int, ToTStructure] = dict()
 
 
 @app.get("/health")
@@ -63,11 +73,24 @@ async def generate(request: Request) -> Response:
     request_info = RequestInfo.from_json(request_info)
     request_id = random_uuid()
     
-    # if use_prediction:
-    #     prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
-    #                                                         prediction_model, [prompt]))
-    #     request_info.prediction_task = prediction_task
-    #     request_info.output_len = await prediction_task
+    if use_prediction:
+        prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
+                                                            prediction_model, [prompt]))
+        # request_info.prediction_task = prediction_task
+        predict_output_len = await prediction_task
+        logger.info(f"Prediction / Real: {predict_output_len} / {request_info.output_len}")
+        request_info.output_len = predict_output_len
+    
+    if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
+        collection_id = request_info.collection_id
+        if collection_id not in collection_graph_unfinished_dict:
+            collection_graph_unfinished_dict[collection_id] = ToTStructure()
+
+        tot_structure = collection_graph_unfinished_dict[collection_id]
+        unfinished_graph = tot_structure.convert_to_unfinished_graph(
+            len(prompt), request_info.output_len)
+        stage_ratio = predict_stage_ratio(unfinished_graph, collection_graph_set)
+        request_info.deadline *= stage_ratio
 
     assert engine is not None
     results_generator = engine.generate(prompt, request_info, 
@@ -77,14 +100,25 @@ async def generate(request: Request) -> Response:
 
     # Streaming case
     async def stream_results() -> AsyncGenerator[bytes, None]:
+        request_input_length = 0
+        request_output_length = 0
         async for request_output in results_generator:
             prompt = request_output.prompt
+            request_input_length += len(prompt)
             assert prompt is not None
             text_outputs = [
                 prompt + output.text for output in request_output.outputs
             ]
+            request_output_length += sum([len(output.text) for output in request_output.outputs])
             ret = {"text": text_outputs}
             yield (json.dumps(ret) + "\0").encode("utf-8")
+            
+        if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
+            tot_structure = collection_graph_unfinished_dict[collection_id]
+            collection_finish = tot_structure.add_length(request_input_length, request_output_length)
+            
+            if collection_finish:
+                collection_graph_set.add(tot_structure.convert_to_graph())
 
     if stream:
         return StreamingResponse(stream_results())
@@ -100,6 +134,17 @@ async def generate(request: Request) -> Response:
     assert final_output is not None
     prompt = final_output.prompt
     assert prompt is not None
+    
+    request_input_length = len(prompt)
+    request_output_length = sum([len(output.text) for output in final_output.outputs])
+    
+    if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
+        tot_structure = collection_graph_unfinished_dict[collection_id]
+        collection_finish = tot_structure.add_length(request_input_length, request_output_length)
+        
+        if collection_finish:
+            collection_graph_set.add(tot_structure.convert_to_graph())
+
     text_outputs = [prompt + output.text for output in final_output.outputs]
     ret = {"text": text_outputs}
     return JSONResponse(ret)
@@ -120,10 +165,20 @@ async def init_app(
 
     global engine
     global use_prediction
+    global use_graph_matching
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
-    if engine_args.scheduling_policy == 'slo' or engine_args.scheduling_policy == 'sjf':
-        use_prediction = True
+
+    if not args.disable_prediction:
+        if engine_args.scheduling_policy in ['sjf', 'slo']:
+            use_prediction = True
+            logger.info(f"Prediction model is enabled")
+            
+    if not args.disable_graph_matching:
+        if engine_args.scheduling_policy in ['slo', 'srtf']:
+            use_graph_matching = True
+            logger.info(f"Graph matching is enabled")
+        
     engine = (llm_engine
               if llm_engine is not None else AsyncLLMEngine.from_engine_args(
                   engine_args, usage_context=UsageContext.API_SERVER))
@@ -195,6 +250,14 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="FastAPI root_path when app is behind a path based routing proxy")
+    parser.add_argument(
+        "--disable-prediction",
+        action='store_true',
+        help="Enable prediction model")
+    parser.add_argument(
+        "--disable-graph-matching",
+        action='store_true',
+        help="Enable graph matching")
     parser.add_argument(
         "--prediction-model-path",
         type=str,
