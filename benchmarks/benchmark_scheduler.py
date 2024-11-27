@@ -32,35 +32,45 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from benchmarks.trace import (client_simulator, send_request, RequestInput, 
                               RequestOutput, Trace, RequestFormat, BaseDataset)
 
+prefill_weight = 1
+decode_weight = 2
+
 @dataclass
 class BenchmarkMetrics:
-    completed: List[int]
+    task_num: List[int]
     request_num: List[int]
-    total_input: int
-    total_output: int
-    request_throughput: float
-    request_goodput: float
-    output_throughput: float
+    task_completed: List[int]
+    request_completed: List[int]
+    task_deadline_meet: List[int]
+    request_deadline_meet: List[int]
+    task_service_gain: List[int]
+    request_service_gain: List[int]
+    task_total_input: int
+    task_total_output: int
+    request_total_input: int
+    request_total_output: int
+    task_throughput: List[float]
+    request_throughput: List[float]
+    task_goodput: List[float]
+    request_goodput: List[float]
+    output_token_throughput: float
     total_token_throughput: float
     mean_ttft_ms: float
-    median_ttft_ms: float
     std_ttft_ms: float
-    percentiles_ttft_ms: List[Tuple[float, float]]
-    mean_tpot_ms: float
-    median_tpot_ms: float
-    std_tpot_ms: float
-    percentiles_tpot_ms: List[Tuple[float, float]]
-    mean_itl_ms: float
-    median_itl_ms: float
-    std_itl_ms: float
-    percentiles_itl_ms: List[Tuple[float, float]]
-    # E2EL stands for end-to-end latency per request.
-    # It is the time taken on the client side from sending
-    # a request to receiving a complete response.
-    mean_e2el_ms: float
-    median_e2el_ms: float
-    std_e2el_ms: float
-    percentiles_e2el_ms: List[Tuple[float, float]]
+    median_ttft_ms: float
+    percentiles_ttft_ms: List[float]
+    mean_tbt_ms: float
+    std_tbt_ms: float
+    median_tbt_ms: float
+    percentiles_tbt_ms: List[float]
+    mean_request_e2el_ms: float
+    std_request_e2el_ms: float
+    median_request_e2el_ms: float
+    percentiles_request_e2el_ms: List[float]
+    mean_task_e2el_ms: float
+    std_task_e2el_ms: float
+    median_task_e2el_ms: float
+    percentiles_task_e2el_ms: List[float]
 
 
 def calculate_metrics(
@@ -71,100 +81,133 @@ def calculate_metrics(
     selected_percentile_metrics: List[str],
     selected_percentiles: List[float],
     gootput_config_dict: Dict[str, float],
-) -> Tuple[BenchmarkMetrics, List[int]]:
-    actual_output_lens: List[int] = []
-    total_input = 0
-    completed = [0, 0, 0]
-    request_num = [0, 0, 0]
-    good_completed = 0
-    itls: List[float] = []
-    tpots: List[float] = []
-    all_tpots: List[float] = []
-    ttfts: List[float] = []
-    e2els: List[float] = []
+) -> BenchmarkMetrics:
+
+    task_num = [0, 0, 0, 0]
+    request_num = [0, 0, 0, 0]
+    task_completed = [0, 0, 0, 0]
+    request_completed = [0, 0, 0, 0]
+    task_deadline_meet = [0, 0, 0, 0]
+    request_deadline_meet = [0, 0, 0, 0]
+    task_service_gain = [0, 0, 0, 0]
+    request_service_gain = [0, 0, 0, 0]
+    
+    task_total_input = 0
+    task_total_output = 0
+    request_total_input = 0
+    request_total_output = 0
+    request_tbt: List[float] = []
+    
+    task_ttft: List[float] = []
+    request_ttft: List[float] = []
+    task_e2el: List[float] = []
+    request_e2el: List[float] = []
+    
     for i in range(len(outputs)):
-        request_num[outputs[i].type] += 1
+        task_type = outputs[i].type  
+        task_num[task_type] += 1
+        task_num[3] += 1
+        num_request = outputs[i].collection_num_requests
+        request_num[task_type] += num_request
+        request_num[3] += num_request
         if outputs[i].success:
-            # We use the tokenizer to count the number of output tokens for all
-            # serving backends instead of looking at len(outputs[i].itl) since
-            # multiple output tokens may be bundled together
-            # Note : this may inflate the output token count slightly
-            output_len = len(
-                tokenizer(outputs[i].generated_text,
-                          add_special_tokens=False).input_ids)
-            actual_output_lens.append(output_len)
-            total_input += input_requests[i].prompt_len
-            tpot = 0
+            task_completed[task_type] += 1
+            task_completed[3] += 1
+            
+            request_completed[task_type] += outputs[i].collection_num_requests
+            request_completed[3] += outputs[i].collection_num_requests
+            
+            input_len = 0
+            output_len = 0
+            input_len_list = []
+            output_len_list = []
+            for req_in, req_out in zip(outputs[i].request_input, outputs[i].request_output):
+                req_output_len = len(tokenizer(req_out, add_special_tokens=False).input_ids)
+                req_input_len = len(tokenizer(req_in, add_special_tokens=False).input_ids)
+                input_len_list.append(req_input_len)
+                output_len_list.append(req_output_len)
+                input_len += req_input_len
+                output_len += req_output_len
+                
+            request_total_output += output_len
+            request_total_input += input_len
+            
+            task_input_length = input_requests[i].prompt_len
+            task_output_length = len(tokenizer(outputs[i].task_output, add_special_tokens=False).input_ids)
+            task_total_input += task_input_length
+            task_total_output += task_output_length
+            
+            if outputs[i].finish_before_ddl:
+                task_deadline_meet[task_type] += 1
+                task_deadline_meet[3] += 1
+                
+                request_deadline_meet[task_type] += outputs[i].collection_num_requests
+                request_deadline_meet[3] += outputs[i].collection_num_requests
+                
+                cur_task_service_gain = task_input_length * prefill_weight + task_output_length * decode_weight
+                task_service_gain[task_type] += cur_task_service_gain
+                task_service_gain[3] += cur_task_service_gain
+                
+                for req_input_len, req_output_len in zip(input_len_list, output_len_list):
+                    req_service_gain = req_input_len * prefill_weight + req_output_len * decode_weight
+                    request_service_gain[task_type] += req_service_gain
+                    request_service_gain[3] += req_service_gain
+            
+            task_ttft.append(outputs[i].task_ttft)
+            task_e2el.append(outputs[i].task_latency)
+            request_ttft.extend(outputs[i].request_ttft)
+            request_e2el.extend(outputs[i].request_latency)
+            
             if output_len > 1:
-                tpot = (outputs[i].latency - outputs[i].ttft) / (output_len -
-                                                                 1)
-                tpots.append(tpot)
-            # Note: if output_len <= 1, we regard tpot as 0 for goodput
-            all_tpots.append(tpot)
-            itls += outputs[i].itl
-            ttfts.append(outputs[i].ttft)
-            e2els.append(outputs[i].latency)
-            completed[outputs[i].type] += 1
-        else:
-            actual_output_lens.append(0)
+                for req_latency, req_ttft, req_output_len in \
+                    zip(outputs[i].request_latency, outputs[i].request_ttft, output_len_list):
+                    tbt = (req_latency - req_ttft) / (req_output_len - 1)
+                    request_tbt.append(tbt)
+            # Note: if output_len <= 1, we regard tbt as 0 for goodput
 
-    if gootput_config_dict:
-        valid_metrics = []
-        slo_values = []
-
-        if "ttft" in gootput_config_dict:
-            valid_metrics.append(ttfts)
-            slo_values.append(gootput_config_dict["ttft"] / 1000)
-        if "tpot" in gootput_config_dict:
-            valid_metrics.append(all_tpots)
-            slo_values.append(gootput_config_dict["tpot"] / 1000)
-        if "e2el" in gootput_config_dict:
-            valid_metrics.append(e2els)
-            slo_values.append(gootput_config_dict["e2el"] / 1000)
-
-        for req_metric in zip(*valid_metrics):
-            is_good_req = all([s >= r for s, r in zip(slo_values, req_metric)])
-            if is_good_req:
-                good_completed += 1
-
-    if sum(completed) == 0:
+    if task_completed[3] == 0:
         warnings.warn(
-            "All requests failed. This is likely due to a misconfiguration "
+            "All tasks failed. This is likely due to a misconfiguration "
             "on the benchmark arguments.",
             stacklevel=2)
     metrics = BenchmarkMetrics(
-        completed=completed,
+        task_num=task_num,
         request_num=request_num,
-        total_input=total_input,
-        total_output=sum(actual_output_lens),
-        request_throughput=sum(completed) / dur_s,
-        request_goodput=good_completed / dur_s,
-        output_throughput=sum(actual_output_lens) / dur_s,
-        total_token_throughput=(total_input + sum(actual_output_lens)) / dur_s,
-        mean_ttft_ms=np.mean(ttfts or 0) *
-        1000,  # ttfts is empty if streaming is not supported by backend
-        std_ttft_ms=np.std(ttfts or 0) * 1000,
-        median_ttft_ms=np.median(ttfts or 0) * 1000,
-        percentiles_ttft_ms=[(p, np.percentile(ttfts or 0, p) * 1000)
-                             for p in selected_percentiles],
-        mean_tpot_ms=np.mean(tpots or 0) * 1000,
-        std_tpot_ms=np.std(tpots or 0) * 1000,
-        median_tpot_ms=np.median(tpots or 0) * 1000,
-        percentiles_tpot_ms=[(p, np.percentile(tpots or 0, p) * 1000)
-                             for p in selected_percentiles],
-        mean_itl_ms=np.mean(itls or 0) * 1000,
-        std_itl_ms=np.std(itls or 0) * 1000,
-        median_itl_ms=np.median(itls or 0) * 1000,
-        percentiles_itl_ms=[(p, np.percentile(itls or 0, p) * 1000)
-                            for p in selected_percentiles],
-        mean_e2el_ms=np.median(e2els or 0) * 1000,
-        std_e2el_ms=np.std(e2els or 0) * 1000,
-        median_e2el_ms=np.mean(e2els or 0) * 1000,
-        percentiles_e2el_ms=[(p, np.percentile(e2els or 0, p) * 1000)
-                             for p in selected_percentiles],
+        task_completed=task_completed,
+        request_completed=request_completed,
+        task_deadline_meet=task_deadline_meet,
+        request_deadline_meet=request_deadline_meet,
+        task_service_gain=task_service_gain,
+        request_service_gain=request_service_gain,
+        task_total_input=task_total_input,
+        task_total_output=task_total_output,
+        request_total_input=request_total_input,
+        request_total_output=request_total_output,
+        task_throughput=[completed / dur_s for completed in task_completed],
+        request_throughput=[completed / dur_s for completed in request_completed],
+        task_goodput=[completed / dur_s for completed in task_deadline_meet],
+        request_goodput=[completed / dur_s for completed in request_deadline_meet],
+        output_token_throughput=request_total_output / dur_s,
+        total_token_throughput=(request_total_input + request_total_output) / dur_s,
+        mean_ttft_ms=np.mean(request_ttft or 0) * 1000,
+        std_ttft_ms=np.std(request_ttft or 0) * 1000,
+        median_ttft_ms=np.median(request_ttft or 0) * 1000,
+        percentiles_ttft_ms=[(p, np.percentile(request_ttft or 0, p) * 1000) for p in selected_percentiles],
+        mean_tbt_ms=np.mean(request_tbt or 0) * 1000,
+        std_tbt_ms=np.std(request_tbt or 0) * 1000,
+        median_tbt_ms=np.median(request_tbt or 0) * 1000,
+        percentiles_tbt_ms=[(p, np.percentile(request_tbt or 0, p) * 1000) for p in selected_percentiles],
+        mean_request_e2el_ms=np.mean(request_e2el or 0) * 1000,
+        std_request_e2el_ms=np.std(request_e2el or 0) * 1000,
+        median_request_e2el_ms=np.median(request_e2el or 0) * 1000,
+        percentiles_request_e2el_ms=[(p, np.percentile(request_e2el or 0, p) * 1000) for p in selected_percentiles],
+        mean_task_e2el_ms=np.mean(task_e2el or 0) * 1000,
+        std_task_e2el_ms=np.std(task_e2el or 0) * 1000,
+        median_task_e2el_ms=np.median(task_e2el or 0) * 1000,
+        percentiles_task_e2el_ms=[(p, np.percentile(task_e2el or 0, p) * 1000) for p in selected_percentiles],
     )
 
-    return metrics, actual_output_lens
+    return metrics
 
 
 async def benchmark(
@@ -191,7 +234,7 @@ async def benchmark(
     test_request: RequestFormat = requests[0]
     sampling_params = SamplingParams(
         n=n,              
-        temperature=1.0,
+        temperature=0.01,
         top_p=1.0,
         max_tokens=max_output_len,
         logprobs=logprobs,
@@ -242,7 +285,7 @@ async def benchmark(
                     input_requests=input_requests,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=60,
+                    client_deadline=1000,
                     api_url=api_url,
                     pbar=pbar,
                 )
@@ -254,10 +297,8 @@ async def benchmark(
                             for output in result]
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
-    # TODO
-    goodput = None
 
-    metrics, actual_output_lens = calculate_metrics(
+    metrics = calculate_metrics(
         input_requests=requests,
         outputs=outputs,
         dur_s=benchmark_duration,
@@ -267,44 +308,50 @@ async def benchmark(
         gootput_config_dict=None,
     )
 
+    request_type = ["Latency", "Throughput", "Collective", "Total"]
+    disable_show_by_request_type = False
+    
+    def print_benchmark_result(title, metric_name, format_str="{:<40} {:<10}", is_service=False, is_float=False):
+        print("{s:{c}^{n}}".format(s=title, n=50, c='-'))
+        indices = range(4) if not disable_show_by_request_type else [3]
+        for i in indices:
+            value = getattr(metrics, metric_name)[i]
+            if is_float:
+                print(format_str.format(f"{request_type[i]} {title.lower()} (req/s):", value))
+            elif is_service:
+                print(format_str.format(f"{request_type[i]} {title.lower()} :", value))
+            else:
+                print(format_str.format(f"{title} {request_type[i]} requests:", f"{value}/{metrics.request_num[i]}"))
+
     print("{s:{c}^{n}}".format(s=' Serving Benchmark Result ', n=50, c='='))
-    print("{:<40} {:<10}".format("Successful requests:", sum(metrics.completed)))
-    print("{:<40} {:<10}".format("Successful latency requests:", 
-                                 f"{metrics.completed[0]}/{metrics.request_num[0]}"))
-    print("{:<40} {:<10}".format("Successful throughput requests:", 
-                                 f"{metrics.completed[1]}/{metrics.request_num[1]}"))
-    print("{:<40} {:<10}".format("Successful collective requests:", 
-                                 f"{metrics.completed[2]}/{metrics.request_num[2]}"))
-    print("{:<40} {:<10.2f}".format("Benchmark duration (s):",
-                                    benchmark_duration))
-    print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
-    print("{:<40} {:<10}".format("Total generated tokens:",
-                                 metrics.total_output))
-    print("{:<40} {:<10.2f}".format("Request throughput (req/s):",
-                                    metrics.request_throughput))
-    # if gootput_config_dict:
-    #     print("{:<40} {:<10.2f}".format("Request goodput (req/s):",
-    #                                     metrics.request_goodput))
-    print("{:<40} {:<10.2f}".format("Output token throughput (tok/s):",
-                                    metrics.output_throughput))
-    print("{:<40} {:<10.2f}".format("Total Token throughput (tok/s):",
-                                    metrics.total_token_throughput))
+    print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
+    print("{:<40} {:<10}".format("Total input tokens:", metrics.request_total_input))
+    print("{:<40} {:<10}".format("Total generated tokens:", metrics.request_total_output))
+    print("{:<40} {:<10.2f}".format("Output token throughput (tok/s):", metrics.output_token_throughput))
+    print("{:<40} {:<10.2f}".format("Total Token throughput (tok/s):", metrics.total_token_throughput))
+    
+    print_benchmark_result('Successful Request', 'request_completed')
+    print_benchmark_result('Deadline Meet Request', 'request_deadline_meet')
+    print_benchmark_result('Service Gain', 'request_service_gain', "{:<40} {:<10.2f}", is_service=True)
+    print_benchmark_result('Throughput', 'request_throughput', "{:<40} {:<10.2f}", is_float=True)
+    print_benchmark_result('Goodput', 'request_goodput', "{:<40} {:<10.2f}", is_float=True)
+    
+    
 
     result = {
         "duration": benchmark_duration,
-        "completed": metrics.completed,
-        "total_input_tokens": metrics.total_input,
-        "total_output_tokens": metrics.total_output,
+        "task_num": metrics.task_num,
+        "task_completed": metrics.task_completed,
+        "request_completed": metrics.request_completed,
+        "request_deadline_meet": metrics.request_deadline_meet,
+        #"task_service_gain": metrics.task_service_gain,
+        "request_service_gain": metrics.request_service_gain,
+        "total_input_tokens": metrics.request_total_input,
+        "total_output_tokens": metrics.request_total_output,
         "request_throughput": metrics.request_throughput,
-        # "request_goodput:":
-        # metrics.request_goodput if gootput_config_dict else None,
-        "output_throughput": metrics.output_throughput,
+        "request_goodput": metrics.request_goodput,
+        "output_throughput": metrics.output_token_throughput,
         "total_token_throughput": metrics.total_token_throughput,
-        "input_lens": [request.prompt_len for request in requests],
-        "output_lens": actual_output_lens,
-        "ttfts": [output.ttft for output in outputs],
-        "itls": [output.itl for output in outputs],
-        "generated_texts": [output.generated_text for output in outputs],
         "errors": [output.error for output in outputs],
     }
 
@@ -316,10 +363,6 @@ async def benchmark(
         # E.g., "Time to First Token"
         metric_header: str,
     ):
-        # This function prints and adds statistics of the specified
-        # metric.
-        # if metric_attribute_name not in selected_percentile_metrics:
-        #     return
         print("{s:{c}^{n}}".format(s=metric_header, n=50, c='-'))
         print("{:<40} {:<10.2f}".format(
             f"Mean {metric_name} (ms):",
@@ -341,10 +384,10 @@ async def benchmark(
             result[f"p{p_word}_{metric_attribute_name}_ms"] = value
 
     process_one_metric("ttft", "TTFT", "Time to First Token")
-    process_one_metric("tpot", "TPOT",
-                       "Time per Output Token (excl. 1st token)")
-    # process_one_metric("itl", "ITL", "Inter-token Latency")
-    process_one_metric("e2el", "E2EL", "End-to-end Latency")
+    process_one_metric("tbt", "TBT",
+                       "Time Between Token")
+    process_one_metric("task_e2el", "Task E2EL", "Task End-to-end Latency")
+    process_one_metric("request_e2el", "Request", "Request End-to-end Latency")
 
     print("=" * 50)
 
@@ -422,15 +465,12 @@ def main(args: argparse.Namespace):
 
         # Traffic
         result_json["request_rate"] = args.request_rate
-        result_json["max_concurrency"] = args.max_concurrency
 
         # Merge with benchmark result
         result_json = {**result_json, **benchmark_result}
 
         # Save to file
         base_model_id = model_id.split("/")[-1]
-        max_concurrency_str = (f"-concurrency{args.max_concurrency}"
-                               if args.max_concurrency is not None else "")
         file_name = f"{base_model_id}-{current_dt}.json"  #noqa
         if args.result_filename:
             file_name = args.result_filename
@@ -460,7 +500,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="example-long.json",
+        default="example-2.json",
         help="Path to the trace file.",
     )
     parser.add_argument(
@@ -579,11 +619,11 @@ if __name__ == '__main__':
     parser.add_argument(
         "--percentile-metrics",
         type=str,
-        default="ttft,tpot,itl,e2el",
+        default="ttft,tbt,itl,e2el",
         help="Comma-seperated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
-        "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". "
-        "Default value is \"ttft,tpot,itl\".")
+        "Allowed metric names are \"ttft\", \"tbt\", \"itl\", \"e2el\". "
+        "Default value is \"ttft,tbt,itl\".")
     parser.add_argument(
         "--metric-percentiles",
         type=str,

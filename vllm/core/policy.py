@@ -225,7 +225,7 @@ class SLOPoilicy(BasePolicy):
         Perform soft admission control to determine whether the sequence group can be admitted.
         In this simplified version, it always returns True.
         '''
-        return min(1, cur_time / seq_group.deadline)
+        return min(1, seq_group.deadline / cur_time)
     
     def get_priority(
         self, 

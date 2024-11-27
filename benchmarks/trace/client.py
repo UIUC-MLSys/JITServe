@@ -28,20 +28,44 @@ class RequestInput:
 
 class RequestOutput:
     def __init__(self):
-        self.latency = 0.0
         self.type = -1
-        self.generated_text = ""
+        self.task_input = ''
+        self.task_output = ''
+        self.request_input = []
+        self.request_output = []
         self.success = False
+        self.finish_before_ddl = False
         self.error = ""
-        self.itl = []
-        self.ttft = 0.0
+        self.task_ttft = 0
+        self.task_latency = 0
+        self.request_ttft = []
+        self.request_latency = []
         self.collection_num_requests = 1
+        # for throughput
+        self.success_num_requests = 0
 
 
 def remove_prefix(text: str, prefix: str) -> str:
     if text.startswith(prefix):
         return text[len(prefix):]
     return text
+
+
+def prompt_format(prompt: str) -> str:
+    return f"""
+    <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+    You are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    {prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+    """
+
+
+def parse_output(output: str, input_length: int) -> str:
+    '''
+    Parse the output from the model.
+    '''
+    return output[input_length:]
 
 
 async def get_request(
@@ -70,6 +94,7 @@ async def send_collective_request(
     timeout = aiohttp.ClientTimeout(total=client_deadline)
     output = RequestOutput()
     output.type = request_info.request.request_type.value
+    output.task_input = request_info.request.prompt
     
     # ToT parameters
     num_thoughts = 3
@@ -79,6 +104,7 @@ async def send_collective_request(
     request_info.sampling_params.n = n
     request_info.sampling_params.best_of = best_of
     success_num_request = (n + 1) + (n * best_of + 1) * (tot_round - 1)
+    output.collection_num_requests = success_num_request
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
@@ -87,47 +113,53 @@ async def send_collective_request(
             "client_id": request_info.client_id,
             "stream": True
         }
-        generated_text = ""
         ttft = 0.0
         num_requests = 0
         st = time.perf_counter()
-        most_recent_timestamp = st
         
-        async def generate_thoughts(session, api_url, payload) -> Tuple[bool, List[str]]:
+        async def generate_thoughts(session, api_url, thought, payload) -> Tuple[bool, str, 
+                                                                        List[str], float, float]:
             new_payload = deepcopy(payload)
+            
+            input_prompt = prompt_format(thought)
+            input_length = len(input_prompt)
+            new_payload['request_info']['prompt'] = input_prompt
             new_payload["sampling_params"]["n"] = 3
             # new_payload["request_info"]["deadline"] = new_payload["request_info"]["deadline"] / 8 * 3
+            
             ttft = 0.0
+            latency = 0.0
+            st = time.perf_counter()
             try:
                 async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
+                        choices = ['' for _ in range(n)]
                         async for chunk_bytes in response.content:
                             chunk_bytes = chunk_bytes.strip()
                             if not chunk_bytes:
                                 continue
                             chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                             data = json.loads(chunk[:-1])
-                            choices = [x for x in data["text"]]
-                            # print(f"Choices: {choices}")
+                            for i, x in enumerate(data["text"]):
+                                choices[i] += x
+                            
                             timestamp = time.perf_counter()
                             # First token
                             if ttft == 0.0:
                                 ttft = time.perf_counter() - st
-                            # Decoding phase
-                            # else:
-                            #     output.itl.append(timestamp -
-                            #                       most_recent_timestamp)
-                            most_recent_timestamp = timestamp
+                        latency = time.perf_counter() - st
+                        choices = [parse_output(choice, input_length) for choice in choices]
                     else:
-                        return (False, [], ttft)
+                        return (False, '', [], ttft, 0)
             except Exception:
                 exc_info = sys.exc_info()
                 error = "".join(traceback.format_exception(*exc_info))
-                return (False, [], ttft)
+                return (False, '', [], ttft, latency)
             
-            return (True, choices, ttft)
+            return (True, input_prompt, choices, ttft, latency)
         
-        async def value_thoughts(session, api_url, choices, payload) -> Tuple[bool, List[float]]:
+        async def value_thoughts(session, api_url, choices, payload) -> Tuple[bool, str, 
+                                                                              str, float, float]:
             # construct the promote for the value model
             value_prompt = """
             Please evaluate the following thoughts on a scale from 1 to 10, where 10 represents the highest value (best) and 1 represents the lowest value. Use the following criteria for scoring:
@@ -139,15 +171,23 @@ async def send_collective_request(
             Assign scores accordingly without providing explanations.
             """
             for i, choice in enumerate(choices):
-                value_prompt += f"Choice {i+1}: {choice}\n"
+                value_prompt += f"Choice {i+1}: {choice}\n"     
+            value_prompt = prompt_format(value_prompt)
             
+            # Adpat the payload for the value process
             new_payload = deepcopy(payload)
             new_payload["request_info"]["prompt"] = value_prompt
             new_payload["sampling_params"]["n"] = 1
+            input_length = len(new_payload['request_info']['prompt'])
             # new_payload["request_info"]["deadline"] /= 8
+            
+            st = time.perf_counter()
+            ttft = 0.0
+            latency = 0.0
             try:
                 async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
+                        value = ''
                         async for chunk_bytes in response.content:
                             chunk_bytes = chunk_bytes.strip()
                             if not chunk_bytes:
@@ -155,23 +195,26 @@ async def send_collective_request(
                             # TODO chunk parsing
                             chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
                             data = json.loads(chunk[:-1])
-                            value = data["text"][0]
-                            # print(f"Value: {value}")
+                            value += data["text"][0]
                             
-                            # To ensure that the simulation results remain unaffected by the behavior of the value model,
-                            # which may sometimes fail to generate values (e.g., unexpected response formats),
-                            # we use randomly generated values as a fallback mechanism.
-                            value = [random.random() for _ in range(len(choices))]
+                            if ttft == 0.0:
+                                ttft = time.perf_counter() - st
+                            
+                        latency = time.perf_counter() - st    
+                        # To ensure that the simulation results remain unaffected by the behavior of the value model,
+                        # which may sometimes fail to generate values (e.g., unexpected response formats),
+                        # we use randomly generated values as a fallback mechanism.
+                        value = parse_output(value, input_length)
+                        # value = [random.random() for _ in range(len(choices))]
                     else:
-                        return (False, [])
+                        return (False, '', [], ttft, latency)
             except Exception:
                 exc_info = sys.exc_info()
                 error = "".join(traceback.format_exception(*exc_info))  
-                return (False, [])     
+                return (False, '', [], 0, 0)     
               
-            return (True, value)
+            return (True, value_prompt, value, ttft, latency)
             
-        
         try:
             # using ToT reuqest pattern for collective requests
             thoughts = [request_info.request.prompt]
@@ -179,54 +222,67 @@ async def send_collective_request(
             for round in range(tot_round):
                 # generate thoughts
                 tasks = []
+                choices = []
                 for thought in thoughts:
-                    new_payload = payload.copy()
                     if round > 0:
                         thought += "\nPlease review and revise the response."
-                    new_payload["request_info"]["prompt"] = thought
-                    tasks.append(generate_thoughts(session, api_url, new_payload))
+                    tasks.append(generate_thoughts(session, api_url, thought, payload))
                 
-                results = await asyncio.gather(*tasks)
-                
-                choices = []
-                for generate_success, generate_choices, generate_ttft in results:
-                    if ttft < generate_ttft:
-                        ttft = generate_ttft
+                results = await asyncio.gather(*tasks)  
+                for generate_success, generate_input, generate_choices, \
+                    generate_ttft, generate_latency in results:
                     if not generate_success:
                         output.error = "Generate thoughts failed"
                         output.success = False
                         break
                     else:
-                        choices.extend(generate_choices)                
+                        choices.extend(generate_choices) 
+                        if ttft == 0.0:
+                            ttft = generate_ttft
+                            output.task_ttft = ttft
+                        output.request_ttft.extend([generate_ttft]*n)
+                        output.request_latency.extend([generate_latency]*n) 
+                        output.request_input.extend([generate_input]*n)
+                        output.request_output.extend(generate_choices)
+                        num_requests += len(generate_choices)
                 if not output.success:
                     break
-                
-                  
-                for choice in choices:
-                    generated_text += choice
-                    num_requests += 1
                 # value thoughts and select the top-k
-                value_success, value = await value_thoughts(session, api_url, choices, payload)
+                value_success, value_input, value, \
+                    value_ttft, value_latency = await value_thoughts(session, api_url, choices, payload)
                 if not value_success:
                     output.error = "Value thoughts failed"
                     output.success = False
                     break
+                output.request_ttft.append(value_ttft)
+                output.request_latency.append(value_latency)
+                output.request_input.append(value_input)
+                output.request_output.append(value)
                 num_requests += 1
                 
                 # sort the choices based on the value
+                value = [random.random() for _ in range(len(choices))]
                 choices = [x for _, x in sorted(zip(value, choices), reverse=True)]
                 thoughts = choices[:num_thoughts]
             
-            generated_text = thoughts[0]
-            output.generated_text = generated_text
+            output.task_latency = time.perf_counter() - st
+            output.task_output = thoughts[0]
+            output.success_num_requests = num_requests
             if num_requests == success_num_request:
                 output.success = True
+                if output.task_latency <= request_info.request.deadline:
+                    output.finish_before_ddl = True
+                else:
+                    output.finish_before_ddl = False
             else:
                 output.success = False
-            output.collection_num_requests = num_requests
-            output.latency = time.perf_counter() - st
         except Exception:
             output.success = False
+            
+            # To ensure that the simulation results remain unaffected by Excpetion
+            # And possible success API calls can still be used for the profiling
+            output.task_latency = time.perf_counter() - st
+            output.success_num_requests = num_requests
             exc_info = sys.exc_info()
             output.error = "".join(traceback.format_exception(*exc_info))
     
@@ -247,6 +303,13 @@ async def send_request(
     timeout = aiohttp.ClientTimeout(total=client_deadline)
     output = RequestOutput()
     output.type = request_info.request.request_type.value
+    output.task_input = request_info.request.prompt
+    
+    request_prompt = prompt_format(request_info.request.prompt)
+    output.request_input.append(request_prompt)
+    request_info.request.prompt = request_prompt
+    input_length = len(request_prompt)
+    
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
             "request_info": request_info.request.to_dict(),
@@ -257,9 +320,7 @@ async def send_request(
         # output.prompt_len = request_info.prompt_len
         generated_text = ""
         ttft = 0.0
-        latency = 0.0
         st = time.perf_counter()
-        most_recent_timestamp = st
         
         try:
             async with session.post(url=api_url, json=payload) as response:
@@ -276,18 +337,24 @@ async def send_request(
                         timestamp = time.perf_counter()
                         # First token
                         if ttft == 0.0:
-                            ttft = time.perf_counter() - st
-                            output.ttft = ttft
-                        # Decoding phase
-                        else:
-                            output.itl.append(timestamp -
-                                              most_recent_timestamp)
-                        most_recent_timestamp = timestamp
+                            ttft = timestamp - st
+                            output.task_ttft = ttft
+                            output.request_ttft.append(ttft)
                         generated_text += data["text"][0]
                         
-                    output.generated_text = generated_text
+                    output_text = parse_output(generated_text, input_length)
+                    output.task_output = output_text
+                    output.request_output.append(output_text)
+                    
+                    latency = time.perf_counter() - st
+                    output.task_latency = latency
+                    output.request_latency.append(latency)
                     output.success = True
-                    output.latency = time.perf_counter() - st
+
+                    if output.task_latency <= request_info.request.deadline:
+                        output.finish_before_ddl = True
+                    else:
+                        output.finish_before_ddl = False
                 else:
                     output.error = response.reason or ""
                     output.success = False
@@ -317,13 +384,10 @@ async def client_simulator(
     tasks = []
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests):
-        # request_format = RequestFormat.from_dict(request)
         request.deadline /= 1000           
         request_info = RequestInput(request, sampling_params, client_id, api_url)
-        deadline = request.deadline
-        # if client_deadline is not None:
-        #     deadline = min(client_deadline, request.deadline)
-        #     request.deadline = deadline
+        deadline = client_deadline
+
         if request.request_type == RequestType.Collective:
             tasks.append(asyncio.create_task(send_collective_request(request_info, deadline, pbar)))
         else:
