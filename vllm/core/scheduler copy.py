@@ -870,7 +870,7 @@ class Scheduler:
             if lora_int_id > 0 and curr_loras is not None:
                 curr_loras.add(lora_int_id)
             swapped_queue.popleft()
-            logger.info(f"Swapping in request {seq_group.request_id} in swapped")
+            logger.info(f"Swapping in request {seq_group.request_id} {self.policy.get_priority(seq_group)} in swapped")
             self._swap_in(seq_group, blocks_to_swap_in)
             self._append_slots(seq_group, blocks_to_copy, enable_chunking)
             is_prefill = seq_group.is_prefill()
@@ -1704,12 +1704,14 @@ class Scheduler:
         preemption_recompute_queue = []
         preemption_blocks_to_swap_out = []
         
+        for seq_group in self.running:
+            budget.add_num_seqs(seq_group.request_id,
+                                seq_group.get_max_num_running_seqs())
+        
         if self.policy is not None:
             can_preempt = self.policy.update_schedule_count()
             if can_preempt:
                 for seq_group in self.running:
-                    budget.add_num_seqs(seq_group.request_id,
-                                        seq_group.get_max_num_running_seqs())
                     budget.add_num_batched_tokens(seq_group.request_id,
                                         self._get_num_new_tokens(seq_group, SequenceStatus.RUNNING, True, budget))
                 preemption_result = self._schedule_concord_preemption_v2(budget, enable_chunking=True)
@@ -1724,12 +1726,6 @@ class Scheduler:
         running_scheduled = self._schedule_running(budget,
                                                        curr_loras,
                                                        enable_chunking=True)
-
-        # Schedule swapped out requests.
-        # If preemption happens, it means we don't have space for swap-in.
-        if preemption_count != 0:
-            assert (len(running_scheduled.preempted) + len(
-                running_scheduled.swapped_out) == 0)
         
         # If we have preemption, we should not use another scheduling for waiting and swapped queues.
         if preemption_result is None:
@@ -1765,6 +1761,10 @@ class Scheduler:
         # Update swapped requests.
         self.swapped.extend(running_scheduled.swapped_out)
         self.swapped.extend(preemption_swapped_out_queue)
+        
+        # if preemption_result is not None:
+        #     self.waiting = deque(sorted(self.waiting, key=self.policy.get_priority))
+        #     self.swapped = deque(sorted(self.swapped, key=self.policy.get_priority))
             
         self.free_finished_seq_groups()
         return SchedulerOutputs(

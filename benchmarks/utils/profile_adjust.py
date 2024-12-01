@@ -37,6 +37,7 @@ def set_poisson_deliver_times(data, lam):
     for i, item in enumerate(data):
         cumulative_time += poisson_intervals[i]
         item['deliver_time'] = cumulative_time
+        item['deadline'] = max(int(item['deadline'] * np.random.normal(1, 0.5) * 3), 0)
     return data
 
 def set_request_rate_deliver_times(data, rate):
@@ -51,13 +52,13 @@ def get_request_rate(deliver_times):
     return 1000 / (deliver_times[-1] / len(deliver_times))
     
 if __name__ == "__main__":
-    new_duration = None   #(ms)
-    lambda_param = 1000
+    new_duration = None  #(ms)
+    lambda_param = 1200
     request_rate = 10       #(req/s)
     
-    input_file = 'example-long-2.json'
-    output_file = 'scaled_poisson_example-2.json'
-    plot_path = 'poisson_request_frequency_distribution.png'
+    input_file = '../example-long-1.json'
+    output_file = '../scaled_poisson-1200_example-3.json'
+    # plot_path = '../BurstGPT_request_frequency_distribution.png'
     
     with open(input_file, 'r', encoding='utf-8') as file:
         data = json.load(file)
@@ -75,7 +76,7 @@ if __name__ == "__main__":
     new_request_rate = get_request_rate([item['deliver_time'] for item in scaled_data])
     new_duration = scaled_data[-1]['deliver_time']
     print(f'New request rate: {new_request_rate} req/s')
-    plot_request_frequency([item['deliver_time'] for item in scaled_data], new_duration)
+    # plot_request_frequency([item['deliver_time'] for item in scaled_data], new_duration)
     
     with open(output_file, 'w', encoding='utf-8') as file:
         json.dump(scaled_data, file, ensure_ascii=False, indent=4)

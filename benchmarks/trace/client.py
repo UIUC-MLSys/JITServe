@@ -85,7 +85,8 @@ async def get_request(
 async def send_collective_request(
     request_info: RequestInput, 
     client_deadline: float = 20,
-    pbar: Optional[tqdm] = None
+    pbar: Optional[tqdm] = None,
+    is_stream: bool = True,
     ) -> RequestOutput:
     '''
     Send collective requests to the model and return the responses.
@@ -111,7 +112,7 @@ async def send_collective_request(
             "request_info": request_info.request.to_dict(),
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
-            "stream": True
+            "stream": is_stream,
         }
         ttft = 0.0
         num_requests = 0
@@ -125,6 +126,7 @@ async def send_collective_request(
             input_length = len(input_prompt)
             new_payload['request_info']['prompt'] = input_prompt
             new_payload["sampling_params"]["n"] = 3
+            new_payload["sampling_params"]["best_of"] = 3
             # new_payload["request_info"]["deadline"] = new_payload["request_info"]["deadline"] / 8 * 3
             
             ttft = 0.0
@@ -134,20 +136,31 @@ async def send_collective_request(
                 async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
                         choices = ['' for _ in range(n)]
-                        async for chunk_bytes in response.content:
+                        buffer = ""
+                        async for chunk_bytes in response.content.iter_any():
                             chunk_bytes = chunk_bytes.strip()
                             if not chunk_bytes:
                                 continue
-                            chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
-                            data = json.loads(chunk[:-1])
-                            for i, x in enumerate(data["text"]):
-                                choices[i] += x
-                            
-                            timestamp = time.perf_counter()
-                            # First token
-                            if ttft == 0.0:
-                                ttft = time.perf_counter() - st
+                            chunk = chunk_bytes.decode("utf-8")
+                            buffer += chunk
+
                         latency = time.perf_counter() - st
+                        
+                        if is_stream:
+                            while "\0" in buffer:
+                                part, buffer = buffer.split("\0", 1)
+                                data = json.loads(part)
+                                for i, x in enumerate(data["text"]):
+                                    choices[i] = x
+
+                                if ttft == 0.0 and data["time"] is not None:
+                                    ttft = data["time"] - st
+                        else:
+                            data = json.loads(buffer)
+                            choices = data["text"]
+                            if ttft == 0.0 and data["time"] is not None:
+                                ttft = data["time"] - st
+                                
                         choices = [parse_output(choice, input_length) for choice in choices]
                     else:
                         return (False, '', [], ttft, 0)
@@ -155,7 +168,7 @@ async def send_collective_request(
                 exc_info = sys.exc_info()
                 error = "".join(traceback.format_exception(*exc_info))
                 return (False, '', [], ttft, latency)
-            
+
             return (True, input_prompt, choices, ttft, latency)
         
         async def value_thoughts(session, api_url, choices, payload) -> Tuple[bool, str, 
@@ -178,6 +191,7 @@ async def send_collective_request(
             new_payload = deepcopy(payload)
             new_payload["request_info"]["prompt"] = value_prompt
             new_payload["sampling_params"]["n"] = 1
+            new_payload["sampling_params"]["best_of"] = 1
             input_length = len(new_payload['request_info']['prompt'])
             # new_payload["request_info"]["deadline"] /= 8
             
@@ -188,18 +202,28 @@ async def send_collective_request(
                 async with session.post(url=api_url, json=new_payload) as response:
                     if response.status == 200:
                         value = ''
-                        async for chunk_bytes in response.content:
+                        buffer = ''
+                        async for chunk_bytes in response.content.iter_any():
                             chunk_bytes = chunk_bytes.strip()
                             if not chunk_bytes:
                                 continue
-                            # TODO chunk parsing
-                            chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
-                            data = json.loads(chunk[:-1])
-                            value += data["text"][0]
-                            
-                            if ttft == 0.0:
-                                ttft = time.perf_counter() - st
-                            
+                            chunk = chunk_bytes.decode("utf-8")
+                            buffer += chunk
+
+                        if is_stream:
+                            while "\0" in buffer:
+                                part, buffer = buffer.split("\0", 1)
+                                data = json.loads(part)
+                                value = data["text"][0]
+
+                                if ttft == 0.0 and data["time"] is not None:
+                                    ttft = data["time"] - st
+                        else:
+                            data = json.loads(buffer)
+                            value = data["text"][0]
+                            if ttft == 0.0 and data["time"] is not None:
+                                ttft = data["time"] - st
+
                         latency = time.perf_counter() - st    
                         # To ensure that the simulation results remain unaffected by the behavior of the value model,
                         # which may sometimes fail to generate values (e.g., unexpected response formats),
@@ -210,9 +234,9 @@ async def send_collective_request(
                         return (False, '', [], ttft, latency)
             except Exception:
                 exc_info = sys.exc_info()
-                error = "".join(traceback.format_exception(*exc_info))  
+                error = "".join(traceback.format_exception(*exc_info)) 
                 return (False, '', [], 0, 0)     
-              
+
             return (True, value_prompt, value, ttft, latency)
             
         try:
@@ -294,13 +318,14 @@ async def send_collective_request(
 async def send_request(
     request_info: RequestInput, 
     client_deadline: float = 20,
-    pbar: Optional[tqdm] = None
+    pbar: Optional[tqdm] = None,
+    is_stream: bool = True,
     ) -> RequestOutput:
     '''
     Send requests to the model and return the responses.
     '''
     api_url = request_info.api_url
-    timeout = aiohttp.ClientTimeout(total=client_deadline)
+    timeout = aiohttp.ClientTimeout(total=client_deadline, sock_read=300)
     output = RequestOutput()
     output.type = request_info.request.request_type.value
     output.task_input = request_info.request.prompt
@@ -310,46 +335,58 @@ async def send_request(
     request_info.request.prompt = request_prompt
     input_length = len(request_prompt)
     
+    timeout = aiohttp.ClientTimeout(total=client_deadline)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
             "request_info": request_info.request.to_dict(),
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
-            "stream": True
+            "stream": is_stream
         }
         # output.prompt_len = request_info.prompt_len
-        generated_text = ""
+        
         ttft = 0.0
         st = time.perf_counter()
         
         try:
             async with session.post(url=api_url, json=payload) as response:
                 if response.status == 200:
-                    async for chunk_bytes in response.content:
+                    buffer = ""
+                    async for chunk_bytes in response.content.iter_any():
                         chunk_bytes = chunk_bytes.strip()
                         if not chunk_bytes:
                             continue
                         
-                        chunk = remove_prefix(chunk_bytes.decode("utf-8"), "ret: ")
-                        # TODO chunk parsing
-                        # remove EOS token
-                        data = json.loads(chunk[:-1])
-                        timestamp = time.perf_counter()
-                        # First token
-                        if ttft == 0.0:
-                            ttft = timestamp - st
-                            output.task_ttft = ttft
-                            output.request_ttft.append(ttft)
-                        generated_text += data["text"][0]
-                        
-                    output_text = parse_output(generated_text, input_length)
-                    output.task_output = output_text
-                    output.request_output.append(output_text)
-                    
+                        chunk = chunk_bytes.decode("utf-8")
+                        buffer += chunk
+                                        
                     latency = time.perf_counter() - st
                     output.task_latency = latency
                     output.request_latency.append(latency)
                     output.success = True
+                    
+                    generated_text = ""
+                    if is_stream:
+                        while "\0" in buffer:
+                            part, buffer = buffer.split("\0", 1)
+                            data = json.loads(part)
+                            # First token
+                            if ttft == 0.0 and data["time"] is not None:
+                                ttft = data["time"] - st
+                                output.task_ttft = ttft
+                                output.request_ttft.append(ttft)
+                            generated_text = data["text"][0]
+                    else:
+                        data = json.loads(buffer)
+                        if ttft == 0.0 and data["time"] is not None:
+                            ttft = data["time"] - st
+                            output.task_ttft = ttft
+                            output.request_ttft.append(ttft)
+                        generated_text = data["text"][0]
+                        
+                    output_text = parse_output(generated_text, input_length)
+                    output.task_output = output_text
+                    output.request_output.append(output_text)
 
                     if output.task_latency <= request_info.request.deadline:
                         output.finish_before_ddl = True
@@ -395,8 +432,5 @@ async def client_simulator(
         
     latency = time.perf_counter() - start_time
     outputs: List[RequestOutput] = await asyncio.gather(*tasks)
-    
-    # for output in outputs:
-    #     print(f"Request Generated text: {output.generated_text}")
     
     return outputs

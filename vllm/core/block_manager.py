@@ -570,11 +570,6 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         if self.block_allocator.get_num_total_blocks(
                 device) < num_blocks_touched:
             return AllocStatus.NEVER
-        elif device == Device.CPU:
-            if num_blocks_touched / self.block_allocator.get_num_total_blocks(device) > 0.1:
-                return AllocStatus.LATER
-            if seq_group.num_cumulative_preemption > 3:
-                return AllocStatus.LATER
         elif self.block_allocator.get_num_free_blocks(
                 device) - num_blocks_touched >= watermark_blocks:
             return AllocStatus.OK

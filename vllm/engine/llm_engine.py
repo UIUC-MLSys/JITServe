@@ -1159,6 +1159,9 @@ class LLMEngine:
                 else:
                     seq_group.update_num_computed_tokens(
                         seq_group_meta.token_chunk_size or 0)
+            
+            if seq_group.time_to_first_token is None:
+                seq_group.time_to_first_token = time.perf_counter()
 
             if outputs:
                 for o in outputs:

@@ -4,7 +4,7 @@ from collections import deque
 from typing import (Callable, Deque, Dict, Iterable, List, Optional, Set,
                     Tuple, Union)
 from vllm.request_info import RequestType, RequestTypeWeight, RequestPhaseWeight, service_compute
-from vllm.sequence import SequenceGroup, Sequence
+from vllm.sequence import SequenceGroup, Sequence, SequenceStatus
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -45,9 +45,19 @@ class BasePolicy(ABC):
         Update the number of scheduler calls.
         '''
         self.num_schedule_count += 1
+        # if self.num_schedule_count % 200 == 0:
+        #     logger.info(f"Number of sequence groups: {len(self.seq_group_dict)}")
+        #     seq_priortiy = [(request_id, priority) for request_id, priority in self.seq_group_slo_dict.items()]
+        #     seq_priortiy = sorted(seq_priortiy, key=lambda x: x[1])
+        #     
+        #     if len(seq_priortiy) > 20:
+        #         logger.info(f"Top 10 sequence groups: {seq_priortiy[:10]}")
+        #         logger.info(f"Bottom 10 sequence groups: {seq_priortiy[-10:]}")
+        #     else:
+        #         logger.info(f"Sorted Sequence groups: {seq_priortiy}")
+        self.seq_group_slo_dict = {}
         if self.num_schedule_count % self.schedule_interval == 0:
             self.update_interval_time(time.time())
-            self.seq_group_slo_dict = {}
             return True
         else:
             return False
@@ -163,9 +173,11 @@ class SLOPoilicy(BasePolicy):
     '''
     def __init__(
         self,
-        schedule_interval: int = 20,
+        schedule_interval: int = 50,
     ) -> None:
         super().__init__(schedule_interval)
+        self.swap_in_time = 800
+        self.swap_out_time = 800
         logger.info("SLO policy is used")
     
     def adjust_slo_priority(
@@ -178,7 +190,7 @@ class SLOPoilicy(BasePolicy):
         Calculate the weighted decay factor for a given request type.
         The decay factor is used to adjust the priority based on the ratio of real length to expected length.
         '''
-        agjust_ratio = None
+        adjust_ratio = None
         if seq_group.request_type == RequestType.LATENCY:
             # Here we consider the importance of deliver speed for latency-sensitive requests
             adjust_ratio = min(1, (real_slo / desire_slo))
@@ -187,8 +199,8 @@ class SLOPoilicy(BasePolicy):
             adjust_ratio = 1.0  
         elif seq_group.request_type == RequestType.COLLECTIVE:
             # MADD (Minimum Allocation for Desired Duration) for collective requests
-            if seq_group.collection_id in self.collection_MADD_ratio:
-                return self.collection_MADD_ratio[seq_group.collection_id]
+            # if seq_group.collection_id in self.collection_MADD_ratio:
+            #     return self.collection_MADD_ratio[seq_group.collection_id]
             
             real_serving_ratio = real_slo / seq_group.get_max_slo_gain()
             
@@ -211,21 +223,21 @@ class SLOPoilicy(BasePolicy):
         if adjust_ratio < TINY_LIFT:
             adjust_ratio = TINY_LIFT
             
-        if seq_group.request_type == RequestType.COLLECTIVE:
-            self.collection_MADD_ratio[seq_group.collection_id] = adjust_ratio
+        # if seq_group.request_type == RequestType.COLLECTIVE:
+        #     self.collection_MADD_ratio[seq_group.collection_id] = adjust_ratio
             
         return adjust_ratio
     
     def soft_admission_control(
         self, 
         seq_group: SequenceGroup,
-        cur_time: float,
+        serve_time: float,
     ) -> float:
         '''
         Perform soft admission control to determine whether the sequence group can be admitted.
         In this simplified version, it always returns True.
         '''
-        return min(1, seq_group.deadline / cur_time)
+        return min(1, (seq_group.deadline / serve_time)**2)
     
     def get_priority(
         self, 
@@ -236,43 +248,25 @@ class SLOPoilicy(BasePolicy):
         The priority is determined by the weighted decay of the real and expected output lengths,
         adjusted for the scheduling interval and task type.
         '''
-        # Fairness: 5% of the time, we schedule the sequence group based on the arrival time
-        # This is to prevent starvation
-        if self.num_schedule_count % (20 * self.schedule_interval) == 0:
-            return seq_group.arrival_time
-        if seq_group.request_id in self.seq_group_slo_dict:
+        if self.seq_group_slo_dict.get(seq_group.request_id) is not None:
             return self.seq_group_slo_dict[seq_group.request_id]
         
-        current_time = self.last_schedule_time
-        curr_prefill_len, curr_decode_len = seq_group.seqs[0].get_serving_len()
-        # For the next scheduling round, we get the real serving length prediction
-        # In normal case, the prefilling should be finished in the next scheduling round
-        next_prefill_len = seq_group.seqs[0].get_prompt_len()
-        next_decode_len = curr_decode_len + self.schedule_interval
+        if seq_group.request_info.output_len != 1024:
+            seq_group.predict_output_length = seq_group.request_info.output_len
         
-        # If prefilling is not finished, then there will be another iteration used to finish the prefilling
-        # So we need to adjust the real output length for the next scheduling round
-        if curr_prefill_len < next_prefill_len:
-            next_decode_len -= 1
-        
-        desire_prefill_len, desire_decode_len = seq_group.get_expected_num_tokens(current_time)
+        serve_time = self.last_schedule_time - seq_group.arrival_time
+        time_to_deadline = seq_group.deadline - serve_time
 
-        # Calculate SLO based on real and expected lengths
-        curr_slo = service_compute(curr_prefill_len, curr_decode_len)
-        next_slo = service_compute(next_prefill_len, next_decode_len)
-        desire_slo = service_compute(desire_prefill_len, desire_decode_len)
-        
-        # logger.info(f"Request Type: {seq_group.request_type}")
-        # logger.info(f"Request {seq_group.request_id} SLO: {curr_slo} -> {next_slo} (Desire: {desire_slo})")
+        seq_status = seq_group.seqs[0].status
+        if seq_status == SequenceStatus.RUNNING:
+            time_to_deadline -= self.swap_out_time
+        elif seq_status == SequenceStatus.SWAPPED:
+            time_to_deadline += self.swap_in_time
             
-        # Weighted decay, this is for different request type
-        delta_slo = next_slo - curr_slo
+        time_to_deadline = max(time_to_deadline, 1)
+        gen_speed = (seq_group.predict_output_length - seq_group.seqs[0].get_output_len()) / time_to_deadline
         
-        # The change in SLO gain from the current iteration to the next iteration
-        delta_slo =  delta_slo / self.adjust_slo_priority(seq_group, curr_slo, desire_slo)
-        # logger.info(f"Adjusted SLO gain: {delta_slo}, {self.adjust_slo_priority(seq_group, curr_slo, desire_slo)}")
-        delta_slo = delta_slo * self.soft_admission_control(seq_group, current_time) 
-        
-        # The priority is the negative of the change in SLO gain, for default sorted in ascending order
-        self.seq_group_slo_dict[seq_group.request_id] = -delta_slo
-        return -delta_slo
+        concord_priority = (-gen_speed * self.soft_admission_control(seq_group, serve_time), seq_group.arrival_time)
+        self.seq_group_slo_dict[seq_group.request_id] = concord_priority
+        seq_group.slo_priority = concord_priority
+        return concord_priority

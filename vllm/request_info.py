@@ -40,7 +40,8 @@ class RequestInfo:
         collection_id: int,  # ID of the collection the request belongs to
         deadline: int,  # Deadline for the request to be processed
         output_len: int,  # The expected output length for the request
-        prediction_task: asyncio.Task = None  # Task for prediction
+        prediction_task: asyncio.Task = None,  # Task for prediction
+        real_output_len: int = 0
     ):
         # Initialize the attributes with the provided values
         self.request_type = request_type
@@ -52,6 +53,7 @@ class RequestInfo:
         self.request_weight = RequestTypeWeight.HIGH if \
                     request_type == RequestType.LATENCY else RequestTypeWeight.LOW
         self.prediction_task = prediction_task
+        self.real_output_len = real_output_len
 
     @classmethod
     def from_json(cls, json_obj: Dict[str, Any]) -> "RequestInfo":

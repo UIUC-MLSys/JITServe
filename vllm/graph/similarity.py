@@ -40,10 +40,19 @@ class ToTStructure:
         self.current_time = time.time()
         self.stage_finish_time = []
         self.stage_finished = 0
+        self.is_finished = False
         
         self._lock = threading.Lock()
         
         assert len(request_per_stage) == stage_num, "The length of request_per_stage should be equal to stage_num"
+        
+    def reset(self) -> None:
+        self.output_input_ratio = []
+        self.current_stage_length = []
+        self.current_time = time.time()
+        self.stage_finish_time = []
+        self.stage_finished = 0
+        self.is_finished = False
         
     def update(self) -> None:
         if len(self.current_stage_length) == self.request_per_stage[self.stage_finished]:
@@ -73,7 +82,6 @@ class ToTStructure:
         total_time = sum(self.stage_finish_time)
         assert total_time != 0, "The total_time should not be zero"
         stage_ratio = [stage_time / total_time for stage_time in self.stage_finish_time]
-        logger.info(f"Graph Stage ratio: {stage_ratio}")
         
         return Graph(vertices, edges, total_time, stage_ratio)
     
@@ -95,18 +103,12 @@ class ToTStructure:
 
 
 def predict_stage_ratio(query_graph: Graph, graph_set) -> float:
-    stage = len(query_graph.vertices)
+    stage = len(query_graph.vertices) - 1
     best_graph: Graph | None = match_graph(query_graph, graph_set)
-    if len(graph_set) > 0:
-        logger.info(f"Graph set size: {len(graph_set)}")
-        logger.info(f"Best Graph stage ratio: {best_graph.stage_ratio}")
     
     if best_graph is None:
-        logger.info("Use default stage ratio")
-        logger.info(f"Default stage ratio: {Defalut_ToT_Requests_Pattern[stage] / sum(Defalut_ToT_Requests_Pattern)}")
         return Defalut_ToT_Requests_Pattern[stage] / sum(Defalut_ToT_Requests_Pattern)
     else:
-        logger.info(f"Best Graph stage ratio: {best_graph.stage_ratio[stage]}")
         return best_graph.stage_ratio[stage]
 
     

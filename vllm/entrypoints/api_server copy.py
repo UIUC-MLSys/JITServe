@@ -107,13 +107,8 @@ async def generate(request: Request) -> Response:
     request_id = random_uuid()
     
     if use_prediction:
-        prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
-                                                            prediction_model, [prompt], request_info))
-    #    request_info.prediction_task = prediction_task
-    #    request_info.output_len = 0
-        # predict_output_len = await prediction_task
-        # logger.info(f"Prediction / Real: {predict_output_len} / {request_info.output_len}")
-        # request_info.output_len = predict_output_len
+        request_info.output_len = 1024
+        threading.Thread(target=send_and_update_request_info, args=(request_info, prompt), daemon=True).start()
     
     if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
         collection_id = request_info.collection_id

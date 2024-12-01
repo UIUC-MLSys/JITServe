@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import enum
+import time
 from abc import ABC, abstractmethod
 from array import array
 from collections import defaultdict
@@ -720,7 +721,7 @@ class SequenceGroup:
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
         self.num_cumulative_preemption = 0
-        self.slo_gain = 0
+        self.slo_priority = 0
         self.priority = priority
         self.collection_id = request_info.collection_id
         self.deadline = request_info.deadline
@@ -729,6 +730,9 @@ class SequenceGroup:
         self.request_type = request_info.request_type
         self.request_weight = request_info.request_weight
         self.prediction_task = request_info.prediction_task
+        self.real_output_len = request_info.real_output_len
+        self.request_info = request_info
+        self.time_to_first_token = None
 
         self.cached_request_output = None
 
@@ -820,7 +824,7 @@ class SequenceGroup:
         self.metrics.last_token_time = now
         return latency
 
-    def maybe_set_first_token_time(self, time: float) -> None:
+    def maybe_set_first_token_time(self, cur_time: float) -> None:
         """Sets the first token time for Request level timings."""
         # Note: in a case where a sequence_group is swapped and
         #   recomputed, the time between iterations is counted
@@ -828,7 +832,9 @@ class SequenceGroup:
         #   POV of the user, there is simply a long generation delay.
         if (self.metrics.first_token_time is None
                 and self.first_seq.get_output_len() == 1):
-            self.metrics.first_token_time = time
+            self.metrics.first_token_time = cur_time
+        if self.time_to_first_token is None:
+            self.time_to_first_token = time.perf_counter()
 
     def maybe_set_first_scheduled_time(self, time: float) -> None:
         """Sets the first scheduled time and time in queue for Request
@@ -869,6 +875,9 @@ class SequenceGroup:
         seq = self.first_seq
         if not seq.is_finished():
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
+            
+            if seq.data.get_output_len() > 0:
+                self.time_to_first_token = time.perf_counter()
             
     def get_expected_num_tokens(self, time: float) -> Tuple[int, int]:
         expected_prompt_length = min(1, time - self.arrival_time / self.prefilling_deadline) * len(self.prompt_token_ids)

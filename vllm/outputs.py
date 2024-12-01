@@ -101,6 +101,7 @@ class RequestOutput:
         lora_request: Optional[LoRARequest] = None,
         encoder_prompt: Optional[str] = None,
         encoder_prompt_token_ids: Optional[List[int]] = None,
+        ttft: Optional[float] = None
     ) -> None:
         self.request_id = request_id
         self.prompt = prompt
@@ -112,6 +113,7 @@ class RequestOutput:
         self.lora_request = lora_request
         self.encoder_prompt = encoder_prompt
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
+        self.ttft = ttft
 
     @classmethod
     def from_seq_group(
@@ -238,11 +240,14 @@ class RequestOutput:
             prompt_logprobs = None
         finished_time = time.time() if finished else None
         seq_group.set_finished_time(finished_time)
+        
+        # if seq_group.time_to_first_token is None:
+        #     seq_group.time_to_first_token = time.perf_counter()
 
         init_args = (seq_group.request_id, prompt, prompt_token_ids,
                      prompt_logprobs, outputs, finished, seq_group.metrics,
                      seq_group.lora_request, encoder_prompt,
-                     encoder_prompt_token_ids)
+                     encoder_prompt_token_ids, seq_group.time_to_first_token)
 
         if use_cache:
             request_output = seq_group.cached_request_output
@@ -263,7 +268,8 @@ class RequestOutput:
                 f"outputs={self.outputs}, "
                 f"finished={self.finished}, "
                 f"metrics={self.metrics}, "
-                f"lora_request={self.lora_request})")
+                f"lora_request={self.lora_request}), "
+                f"ttft={self.ttft}")
 
 
 class EmbeddingRequestOutput:

@@ -18,6 +18,7 @@ from pathlib import Path
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 from vllm import SamplingParams
+from vllm.sampling_params import RequestOutputKind
 
 try:
     from vllm.transformers_utils.tokenizer import get_tokenizer
@@ -29,8 +30,8 @@ except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from benchmarks.trace import (client_simulator, send_request, RequestInput, 
-                              RequestOutput, Trace, RequestFormat, BaseDataset)
+from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, 
+                              RequestOutput, Trace, RequestFormat, BaseDataset, RequestType)
 
 prefill_weight = 1
 decode_weight = 2
@@ -153,15 +154,19 @@ def calculate_metrics(
                     request_service_gain[task_type] += req_service_gain
                     request_service_gain[3] += req_service_gain
             
-            task_ttft.append(outputs[i].task_ttft)
+            if outputs[i].task_ttft > 0:
+                task_ttft.append(outputs[i].task_ttft)
             task_e2el.append(outputs[i].task_latency)
-            request_ttft.extend(outputs[i].request_ttft)
+            
+            for req_ttft in outputs[i].request_ttft:
+                if req_ttft > 0:
+                    request_ttft.append(req_ttft)
             request_e2el.extend(outputs[i].request_latency)
             
             if output_len > 1:
                 for req_latency, req_ttft, req_output_len in \
                     zip(outputs[i].request_latency, outputs[i].request_ttft, output_len_list):
-                    if req_output_len == 1:
+                    if req_output_len == 1 or req_ttft == 0:
                         continue
                     tbt = (req_latency - req_ttft) / (req_output_len - 1)
                     request_tbt.append(tbt)
@@ -229,7 +234,7 @@ async def benchmark(
     max_concurrency: Optional[int],
     max_output_len: int,
 ):
-    requests = [trace[0]]
+    requests = trace
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
@@ -238,6 +243,7 @@ async def benchmark(
         n=n,              
         temperature=0.01,
         top_p=1.0,
+        top_k=1,
         max_tokens=max_output_len,
         logprobs=logprobs,
         best_of=best_of,
@@ -251,7 +257,10 @@ async def benchmark(
         api_url=api_url,
     )
     
-    test_output: RequestOutput = await send_request(request_info=test_input)
+    if test_input.request.request_type == RequestType.Collective:
+        test_output: RequestOutput = await send_collective_request(request_info=test_input)
+    else:
+        test_output: RequestOutput = await send_request(request_info=test_input)
     if not test_output.success:
         raise ValueError(
             "Initial test run failed - Please make sure benchmark arguments "
@@ -474,12 +483,15 @@ def main(args: argparse.Namespace):
         # Save to file
         base_model_id = model_id.split("/")[-1]
         
+        is_test = False
+        
         file_dir = f"poisson-{args.poisson}" if args.poisson is not None else "BurstGPT"
+        file_dir = file_dir if is_test is False else "test"
         file_dir = f"result/{file_dir}"
         
         if not os.path.exists(file_dir):
             os.makedirs(file_dir)
-        file_name = f"{file_dir}/{base_model_id}-{args.policy}-{'chunked' if args.chunked else 'normal'}.json"
+        file_name = f"{file_dir}/{base_model_id}-{args.policy}-{'chunked' if args.chunked else 'normal'}-small.json"
         print(f"Saving benchmark results to {file_name}")
         with open(file_name, "w", encoding='utf-8') as outfile:
             json.dump(result_json, outfile, indent=4, ensure_ascii=False)
@@ -505,7 +517,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="example-2.json",
+        default="scaled_poisson-1200_ddl-normal-3.json",
         help="Path to the trace file.",
     )
     parser.add_argument(
@@ -558,7 +570,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--best-of",
         type=int,
-        default=2,
+        default=1,
         help="Generates `best_of` sequences per prompt and "
         "returns the best one.",
     )
