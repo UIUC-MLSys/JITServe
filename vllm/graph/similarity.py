@@ -7,7 +7,7 @@ from vllm.logger import init_logger
 logger = init_logger(__file__)
 
 Defalut_ToT_Stage = 4
-Defalut_ToT_Requests_Pattern = [1, 1, 3, 1]
+Defalut_ToT_Requests_Pattern = [3, 1, 9, 1]
 
 class Vertex:
     def __init__(self, attr):

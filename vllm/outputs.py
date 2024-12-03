@@ -101,7 +101,9 @@ class RequestOutput:
         lora_request: Optional[LoRARequest] = None,
         encoder_prompt: Optional[str] = None,
         encoder_prompt_token_ids: Optional[List[int]] = None,
-        ttft: Optional[float] = None
+        ttft: Optional[float] = None,
+        tbt: Optional[List[float]] = None,
+        service_gain: Optional[float] = None,
     ) -> None:
         self.request_id = request_id
         self.prompt = prompt
@@ -114,6 +116,8 @@ class RequestOutput:
         self.encoder_prompt = encoder_prompt
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
         self.ttft = ttft
+        self.tbt = tbt
+        self.service_gain = service_gain
 
     @classmethod
     def from_seq_group(
@@ -247,7 +251,8 @@ class RequestOutput:
         init_args = (seq_group.request_id, prompt, prompt_token_ids,
                      prompt_logprobs, outputs, finished, seq_group.metrics,
                      seq_group.lora_request, encoder_prompt,
-                     encoder_prompt_token_ids, seq_group.time_to_first_token)
+                     encoder_prompt_token_ids, seq_group.concord_metrics.time_to_first_token,
+                     seq_group.concord_metrics.time_between_token, seq_group.concord_metrics.service_gain)
 
         if use_cache:
             request_output = seq_group.cached_request_output

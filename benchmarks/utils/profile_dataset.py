@@ -1,21 +1,111 @@
-import requests
-import time
-import json
-import sys
 import asyncio
+import numpy as np
+import json
+import requests
+import sys
+import time
 from pathlib import Path
-from vllm import SamplingParams
 from typing import List
 from transformers import AutoTokenizer
 from tqdm import tqdm
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+from vllm import SamplingParams
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, 
                               RequestOutput, Trace, RequestFormat, RequestType)
 
+# token/s for latency-sensitive requests
+DELIVERY_SPEED = 10
+# for other requests we use:
+NORMAL_MEAN = 5
+NORMAL_VAR = 0.5
+# lambda for poisson distribution delivery time
+POISSON_LAMBDA = 200
+# number of requests
+NEW_REQUESTS_NUMBER = 4000
+# TODO: use BurstGPT trace
+IS_BURST = False
 
-async def call_vllm_api(trace: List[RequestFormat], model_name, api_url):
+# Example usage
+API_URL = "http://localhost:8000/generate"
+MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+
+test_trace_path = None
+test_trace_save_path = None
+trace_path = '../poisson-600-deadline-5.json'
+trace_save_path = None
+
+def adjust_request_type(results, adapt_ratio):
+    assert sum(adapt_ratio) == 1
+    num_results = len(results)
+    num_types = len(adapt_ratio)
+    
+    # Calculate the number of each type
+    type_counts = [int(num_results * ratio) for ratio in adapt_ratio]
+    type_counts[-1] = num_results - sum(type_counts[:-1])
+    
+    # Create an array with the specified number of each type
+    types = []
+    for i, count in enumerate(type_counts):
+        types.extend([i] * count)
+    np.random.shuffle(types)
+    
+    for i, result in enumerate(results):
+        results[i]["request_type"] = types[i]
+        
+
+def adjust_deadline(results):
+    for result in results:
+        if result["request_type"] == 0:
+            result["deadline"] = max(int(result["output_len"] / DELIVERY_SPEED * 1000), 1000)
+        else:
+            result["deadline"] = max(int(result["deadline"] * np.random.normal(NORMAL_MEAN, NORMAL_VAR)), 1000)
+            
+    return results
+
+def adjust_deliver_time(results):
+    cumulative_time = 0
+    poisson_intervals = np.random.poisson(POISSON_LAMBDA, len(results))
+    for i, result in enumerate(results):
+        cumulative_time += poisson_intervals[i]
+        result["deliver_time"] = int(cumulative_time)
+        
+    return results
+        
+def adjust_data_length(results, new_len):
+    if len(results) < new_len:
+        leftover_len = new_len - len(results)
+        new_results = []
+        while leftover_len >= len(results):
+            new_results.extend(results)
+            leftover_len -= len(results)
+        new_results.extend(results[:leftover_len])
+        results = new_results
+    else:
+        results = results[:len]
+    return results
+    
+def save_trace(results, save_path):
+    # Save the trace
+    with open(save_path, 'w', encoding='utf-8') as f:
+        new_results = []
+        for result in results:
+            new_results.append({
+                "prompt": result["prompt"],
+                "output": result["output"],
+                "prompt_len": result["prompt_len"],
+                "output_len": result["output_len"],
+                "collection_id": result["collection_id"],
+                "request_type": result["request_type"],
+                "deliver_time": result["deliver_time"],
+                "deadline": result["deadline"],
+                "priority": result["priority"]
+            })
+        json.dump(new_results, f, indent=4, ensure_ascii=False)
+
+async def call_vllm_api(trace: List[RequestFormat]):
     results = []
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     
     sampling_params = SamplingParams(
         n=1,              
@@ -33,16 +123,16 @@ async def call_vllm_api(trace: List[RequestFormat], model_name, api_url):
                 request=request,
                 sampling_params=sampling_params,
                 client_id=0,
-                api_url=api_url,
+                api_url=API_URL,
             )
             prompt = test_input.request.prompt
             start_time = time.time()
 
             # Make the API call
             if request.request_type == RequestType.Collective:
-                response = await send_collective_request(test_input, client_deadline=1000)
+                response: RequestOutput = await send_collective_request(test_input, client_deadline=1000)
             else:
-                response = await send_request(test_input, client_deadline=1000)
+                response: RequestOutput = await send_request(test_input, client_deadline=1000)
 
             # Measure end time
             end_time = time.time()
@@ -50,51 +140,48 @@ async def call_vllm_api(trace: List[RequestFormat], model_name, api_url):
             # Calculate latency
             latency = int((end_time - start_time) * 1000)
 
-            # Extract generated text and token length from the response
-            response_data = response.generated_text
-
             # Store the result
             results.append({
                 "prompt": prompt,
-                "output": response.generated_text,
+                "output": response.request_output,
                 "prompt_len": request.prompt_len,
-                "output_len": tokenizer.encode(response.generated_text, return_tensors='pt').shape[1],
-                "collection_id": request.collection_id,
+                "output_len": 0,
+                "collection_id": int(request.collection_id),
                 "request_type": request.request_type.value,
-                "deliver_time": request.deliver_time,
-                "deadline": latency,
+                "deliver_time": int(request.deliver_time),
+                "deadline": int(latency),
                 "priority": 0
             })
         except Exception as e:
             print(f"Error index: {i}")
+            print(e)
 
+    for i in range(len(results)):
+        for output in results[i]["output"]:
+            results[i]["output_len"] += len(tokenizer(output).input_ids)
     return results
 
-# Example usage
-trace_path = 'example.json'
-trace_save_path = 'example'
-model_name = "meta-llama/Llama-3.1-8B-Instruct"
-api_url = "http://localhost:8000/generate"
+async def main(trace, trace_save_path=None):
+    trace = [Trace.load_trace(trace_path)[0]]
+    
+    # trace = adjust_request_type(trace, [0.5, 0.3, 0.2])
+    # print("Finish adjusting request type")
 
-trace = Trace.load_trace(trace_path)
+    results = await call_vllm_api(trace)
+    print("Finish calling VLLM API")
+    results = adjust_deadline(results)
+    print("Finish Adjusting deadlines")
+    results = adjust_deliver_time(results)
+    print("Finish Adjusting deliver times")
+    results = adjust_data_length(results, NEW_REQUESTS_NUMBER)
+    print("Finish Adjusting data length")
+    
+    if trace_save_path is None:
+        model_name = MODEL_NAME.split("/")[-1]
+        trace_save_path = f"{model_name}-p{POISSON_LAMBDA}-d{DELIVERY_SPEED}-n{NEW_REQUESTS_NUMBER}.json"
+    print(f"Saving trace to {trace_save_path}")
+    save_trace(results, trace_save_path)
 
-results = asyncio.run(call_vllm_api(trace, model_name, api_url))
+if __name__ == "__main__":
 
-# Save the trace
-for times in [0.5, 1, 2, 4]:
-    s_trace_path = f'{trace_save_path}-{times}.json'
-    with open(s_trace_path, 'w', encoding='utf-8') as f:
-        new_results = []
-        for result in results:
-            new_results.append({
-                "prompt": result["prompt"],
-                "output": result["output"],
-                "prompt_len": result["prompt_len"],
-                "output_len": result["output_len"],
-                "collection_id": result["collection_id"],
-                "request_type": result["request_type"],
-                "deliver_time": result["deliver_time"],
-                "deadline": int(result["deadline"] * times),
-                "priority": result["priority"]
-            })
-        json.dump(new_results, f, indent=4, ensure_ascii=False)
+    asyncio.run(main(trace_path, trace_save_path))

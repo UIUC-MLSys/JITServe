@@ -3,17 +3,11 @@ from enum import Enum, IntEnum
 from typing import List, Dict, Any
 
 # Enum class to define different types of requests
-# LATENCY: Request that requires low latency
-# THROUGHPUT: Request that requires high throughput
-# COLLECTIVE: Request that involves collective operations
 class RequestType(IntEnum):
     LATENCY = 0  # Latency-sensitive request
     THROUGHPUT = 1  # Throughput-sensitive request
     COLLECTIVE = 2  # Collective request (e.g., batch processing)
 
-# Enum class to define the weight of a request
-# HIGH: Request with high priority (used for latency-sensitive requests)
-# LOW: Request with low priority (used for throughput-sensitive or collective requests)
 class RequestTypeWeight(Enum):
     LOW = 1  # Low priority
     HIGH = 2  # High priority
@@ -22,10 +16,19 @@ class RequestPhaseWeight(Enum):
     PREFILL = 1
     DECODE = 2
     
-def service_compute(prefilling_length: int, decoding_length: int) -> float:
-    return prefilling_length * RequestPhaseWeight.PREFILL.value + \
-        decoding_length * RequestPhaseWeight.DECODE.value
-
+class RequestDeltaInfo:
+    def __init__(
+        self,
+        cur_time: float,
+        delta_time: float,
+        delta_prefill_len: int,
+        delta_decode_len: int
+    ) -> None:
+        self.cur_time = cur_time 
+        self.delta_time = delta_time
+        self.delta_prefill_len = delta_prefill_len
+        self.delta_decode_len = delta_decode_len   
+    
 # Class to hold information about a request
 class RequestInfo:
     '''
@@ -41,7 +44,6 @@ class RequestInfo:
         deadline: int,  # Deadline for the request to be processed
         output_len: int,  # The expected output length for the request
         prediction_task: asyncio.Task = None,  # Task for prediction
-        real_output_len: int = 0
     ):
         # Initialize the attributes with the provided values
         self.request_type = request_type
@@ -53,7 +55,7 @@ class RequestInfo:
         self.request_weight = RequestTypeWeight.HIGH if \
                     request_type == RequestType.LATENCY else RequestTypeWeight.LOW
         self.prediction_task = prediction_task
-        self.real_output_len = real_output_len
+        self.real_output_len = output_len
 
     @classmethod
     def from_json(cls, json_obj: Dict[str, Any]) -> "RequestInfo":

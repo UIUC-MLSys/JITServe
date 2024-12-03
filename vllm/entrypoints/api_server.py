@@ -53,18 +53,15 @@ def send_request_to_prediction(connection: socket.socket, request_info: RequestI
         data = {'prompt': [prompt]}
         data_to_send = pickle.dumps(data)
         connection.sendall(data_to_send)
-        logger.info(f"Sent {request_info.collection_id} prompt to prediction.py")
 
         data = connection.recv(4096)
         if data:
             received_data = pickle.loads(data)
-            logger.info(f"Received response from prediction.py")
             return received_data['output_len'][0]
         else:
-            logger.info("No response received from yy.py.")
             return 1024
     except socket.error as e:
-        logger.info(f"Error while sending/receiving data: {e}")
+        # logger.info(f"Error while sending/receiving data: {e}")
         return 1024
 
 def send_and_update_request_info(request_info: RequestInfo, prompt: str):
@@ -75,7 +72,6 @@ def send_and_update_request_info(request_info: RequestInfo, prompt: str):
 
         if result_len:
             request_info.output_len = result_len
-            logger.info(f"Updated request_info.output_len: {request_info.output_len}")
 
 @app.get("/health")
 async def health() -> Response:
@@ -102,18 +98,16 @@ async def generate(request: Request) -> Response:
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id
     request_info = RequestInfo.from_json(request_info)
-    request_info.real_output_len = request_info.output_len
     request_info.output_len = 1024
     request_id = random_uuid()
     
     if use_prediction:
-        prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
-                                                            prediction_model, [prompt], request_info))
-    #    request_info.prediction_task = prediction_task
-    #    request_info.output_len = 0
-        # predict_output_len = await prediction_task
-        # logger.info(f"Prediction / Real: {predict_output_len} / {request_info.output_len}")
-        # request_info.output_len = predict_output_len
+        # using network socket to send request to prediction model
+        threading.Thread(target=send_and_update_request_info, args=(request_info, prompt), daemon=True).start()
+        # using async_predict to send request to prediction model
+        # prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
+        #                                                     prediction_model, [prompt], request_info))
+        
     
     if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
         collection_id = request_info.collection_id
@@ -146,7 +140,8 @@ async def generate(request: Request) -> Response:
                 prompt + output.text for output in request_output.outputs
             ]
             request_output_length += sum([len(output.text) for output in request_output.outputs])
-            ret = {"text": text_outputs, "time": request_output.ttft}
+            ret = {"text": text_outputs, "ttft": request_output.ttft,
+                   "tbt": request_output.tbt, "service_gain": request_output.service_gain}
             yield (json.dumps(ret) + "\0").encode("utf-8")
             
         if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
@@ -184,7 +179,8 @@ async def generate(request: Request) -> Response:
             tot_structure.is_finished = True
 
     text_outputs = [prompt + output.text for output in final_output.outputs]
-    ret = {"text": text_outputs, "time": final_output.ttft}
+    ret = {"text": text_outputs, "time": final_output.ttft,
+           "tbt": final_output.tbt, "service_gain": final_output.service_gain}
     return JSONResponse(ret)
 
 

@@ -79,9 +79,8 @@ def calculate_metrics(
     outputs: List[RequestOutput],
     dur_s: float,
     tokenizer: PreTrainedTokenizerBase,
-    selected_percentile_metrics: List[str],
     selected_percentiles: List[float],
-    gootput_config_dict: Dict[str, float],
+    use_hard_servie_calculation: bool = False,
 ) -> BenchmarkMetrics:
 
     task_num = [0, 0, 0, 0]
@@ -145,14 +144,23 @@ def calculate_metrics(
                 request_deadline_meet[task_type] += outputs[i].collection_num_requests
                 request_deadline_meet[3] += outputs[i].collection_num_requests
                 
-                cur_task_service_gain = task_input_length * prefill_weight + task_output_length * decode_weight
+                # Hard service gain calculation: if miss ddl, service gain is 0
+                if use_hard_servie_calculation:
+                    cur_task_service_gain = task_input_length * prefill_weight + task_output_length * decode_weight
+                    task_service_gain[task_type] += cur_task_service_gain
+                    task_service_gain[3] += cur_task_service_gain
+                    
+                    for req_input_len, req_output_len in zip(input_len_list, output_len_list):
+                        req_service_gain = req_input_len * prefill_weight + req_output_len * decode_weight
+                        request_service_gain[task_type] += req_service_gain
+                        request_service_gain[3] += req_service_gain
+                        
+            if not use_hard_servie_calculation:
+                cur_task_service_gain = outputs[i].request_service_gain
                 task_service_gain[task_type] += cur_task_service_gain
                 task_service_gain[3] += cur_task_service_gain
-                
-                for req_input_len, req_output_len in zip(input_len_list, output_len_list):
-                    req_service_gain = req_input_len * prefill_weight + req_output_len * decode_weight
-                    request_service_gain[task_type] += req_service_gain
-                    request_service_gain[3] += req_service_gain
+                request_service_gain[task_type] += cur_task_service_gain
+                request_service_gain[3] += cur_task_service_gain
             
             if outputs[i].task_ttft > 0:
                 task_ttft.append(outputs[i].task_ttft)
@@ -163,13 +171,14 @@ def calculate_metrics(
                     request_ttft.append(req_ttft)
             request_e2el.extend(outputs[i].request_latency)
             
-            if output_len > 1:
-                for req_latency, req_ttft, req_output_len in \
-                    zip(outputs[i].request_latency, outputs[i].request_ttft, output_len_list):
-                    if req_output_len == 1 or req_ttft == 0:
-                        continue
-                    tbt = (req_latency - req_ttft) / (req_output_len - 1)
-                    request_tbt.append(tbt)
+            # if output_len > 1:
+            #     for req_latency, req_ttft, req_output_len in \
+            #         zip(outputs[i].request_latency, outputs[i].request_ttft, output_len_list):
+            #         if req_output_len == 1 or req_ttft == 0:
+            #             continue
+            #         tbt = (req_latency - req_ttft) / (req_output_len - 1)
+            #         request_tbt.append(tbt)
+            request_tbt.extend(outputs[i].request_tbt)
             # Note: if output_len <= 1, we regard tbt as 0 for goodput
 
     if task_completed[3] == 0:
@@ -234,7 +243,7 @@ async def benchmark(
     max_concurrency: Optional[int],
     max_output_len: int,
 ):
-    requests = trace
+    requests = [trace[0]]
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
@@ -314,9 +323,7 @@ async def benchmark(
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
-        selected_percentile_metrics=selected_percentile_metrics,
         selected_percentiles=selected_percentiles,
-        gootput_config_dict=None,
     )
 
     request_type = ["Latency", "Throughput", "Collective", "Total"]
@@ -517,7 +524,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="scaled_poisson-1200_ddl-normal-3.json",
+        default="test-swap.json",
         help="Path to the trace file.",
     )
     parser.add_argument(

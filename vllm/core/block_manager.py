@@ -83,6 +83,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             # we may need 2 blocks when the second block only holds 1 token.
             self.max_block_sliding_window = num_blocks + 1
 
+        self.cpu_watermarks = 0.2
         self.watermark = 0.05
         assert watermark >= 0.0
 
@@ -521,6 +522,44 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_allocator.get_prefix_cache_hit_rate(device)
+    
+    def get_num_blocks_number(self, seq_group: SequenceGroup,
+                              status: SequenceStatus, num_lookahead_slots: int) -> int:
+        num_blocks_touched = 0
+        blocks: List[Block] = []
+        if status == SequenceStatus.WAITING:
+            check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
+
+            seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+            num_blocks_touched = BlockTable.get_num_required_blocks(
+                seq.get_token_ids(),
+                block_size=self.block_size,
+                num_lookahead_slots=num_lookahead_slots,
+            )
+            return num_blocks_touched
+        
+        for seq in seq_group.get_seqs(status=status):
+            block_table = self.block_tables[seq.seq_id]
+            if block_table.blocks is not None:
+                # Compute the number blocks to touch for the tokens to be
+                # appended. This does NOT include the full blocks that need
+                # to be touched for the swap.
+                num_blocks_touched += \
+                    block_table.get_num_blocks_touched_by_append_slots(
+                        block_table.get_unseen_token_ids(seq.get_token_ids()),
+                        num_lookahead_slots=num_lookahead_slots)
+                blocks.extend(block_table.blocks)
+        # Compute the number of full blocks to touch and add it to the
+        # existing count of blocks to touch.
+        num_blocks_touched += self.block_allocator.get_num_full_blocks_touched(
+            blocks, device=Device.GPU)
+        
+        return num_blocks_touched
+    
+    def get_max_gpu_num_blocks_number(self) -> int:
+        watermark_blocks = self.watermark_blocks
+        gpu_blocks_number = self.block_allocator.get_num_total_blocks(Device.GPU)
+        return gpu_blocks_number - watermark_blocks
 
     def _can_swap(self,
                   seq_group: SequenceGroup,

@@ -19,7 +19,7 @@ from vllm.inputs.parse import is_encoder_decoder_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.request_info import RequestType, RequestInfo, RequestPhaseWeight, service_compute
+from vllm.request_info import RequestType, RequestInfo, RequestPhaseWeight
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 from vllm.logger import init_logger
@@ -130,6 +130,18 @@ class RequestMetrics:
     scheduler_time: Optional[float] = None
     model_forward_time: Optional[float] = None
     model_execute_time: Optional[float] = None
+  
+    
+class RequestConcordMetrics:
+    def __init__(self, arrival_time) -> None:
+        self.arrival_time: float = arrival_time
+        self.prompt_len: int = 0
+        self.output_len: int = 0
+        self.time_to_first_token: float = None
+        self.time_between_token: List[float] = []
+        # should set to None when in swapped/waiting queue
+        self.last_schedule_time: float = None
+        self.service_gain: float = 0
 
 
 class SequenceDataDelta(
@@ -296,10 +308,10 @@ class SequenceData(msgspec.Struct,
         return len(self._output_token_ids) + len(self._prompt_token_ids)
     
     def get_serving_len(self) -> Tuple[int, int]:
-        '''
-        Return the serving length (prefilling token length, decoding token length)of the sequence.
-        '''
         return (min(self._num_computed_tokens, len(self.prompt_token_ids)), len(self._output_token_ids))
+    
+    def get_prefill_len(self) -> int:
+        return min(self._num_computed_tokens, len(self.prompt_token_ids))
 
     def get_prompt_len(self) -> int:
         return len(self._prompt_token_ids)
@@ -602,6 +614,12 @@ class Sequence:
     
     def get_serving_len(self) -> Tuple[int, int]:
         return self.data.get_serving_len()
+    
+    def get_prefill_len(self) -> int:
+        return self.data.get_prefill_len()
+    
+    def get_decode_len(self) -> int:
+        return self.data.get_output_len()
 
     def get_output_len(self) -> int:
         return self.data.get_output_len()
@@ -720,19 +738,21 @@ class SequenceGroup:
         self.prompt_adapter_request = prompt_adapter_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
+        self.priority = priority
+        
+        # concord related args
         self.num_cumulative_preemption = 0
         self.slo_priority = 0
-        self.priority = priority
         self.collection_id = request_info.collection_id
         self.deadline = request_info.deadline
-        self.prefilling_deadline = request_info.deadline / 10
+        self.prefilling_deadline = min(2000, self.deadline / 2)
         self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
         self.request_weight = request_info.request_weight
         self.prediction_task = request_info.prediction_task
         self.real_output_len = request_info.real_output_len
         self.request_info = request_info
-        self.time_to_first_token = None
+        self.concord_metrics = RequestConcordMetrics(time.perf_counter())
 
         self.cached_request_output = None
 
@@ -813,11 +833,6 @@ class SequenceGroup:
 
     def get_last_latency(self, now: float) -> float:
         """Sets the last token time for Request level timings."""
-        # If still in prefill phase, raise Error.
-        if self.is_prefill():
-            raise ValueError(
-                "seq_group.get_last_latency() should not be called "
-                "if the seq_group is in prefill phase.")
 
         # Otherwise return token latency.
         latency = now - self.metrics.last_token_time
@@ -833,8 +848,6 @@ class SequenceGroup:
         if (self.metrics.first_token_time is None
                 and self.first_seq.get_output_len() == 1):
             self.metrics.first_token_time = cur_time
-        if self.time_to_first_token is None:
-            self.time_to_first_token = time.perf_counter()
 
     def maybe_set_first_scheduled_time(self, time: float) -> None:
         """Sets the first scheduled time and time in queue for Request
@@ -875,23 +888,104 @@ class SequenceGroup:
         seq = self.first_seq
         if not seq.is_finished():
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
+                
+    def update_concord_metrics(self, cur_time: float) -> None:
+        # cur_time: s
+        seq = self.seqs[0]
+        
+        output_len = seq.get_output_len()
+        input_len = seq.get_prompt_len()
+        
+        if output_len > 1 and self.concord_metrics.time_to_first_token is None:
+            self.concord_metrics.time_to_first_token = cur_time - self.concord_metrics.arrival_time
+                
+        delta_input_length = input_len - self.concord_metrics.prompt_len 
+        delta_output_lenth = output_len - self.concord_metrics.output_len
+        # compute service gain
+
+        self.concord_metrics.service_gain = self.service_compute(cur_time)
+        if self.concord_metrics.last_schedule_time is not None and \
+            delta_output_lenth > 0:
+                delta_time = cur_time - self.concord_metrics.last_schedule_time
+                self.concord_metrics.time_between_token.append(delta_time / delta_output_lenth)
+        
+        # only update last_schedule_time when new token is generated
+        if delta_output_lenth > 0:          
+            self.concord_metrics.last_schedule_time = cur_time
             
-            if seq.data.get_output_len() > 0:
-                self.time_to_first_token = time.perf_counter()
+        self.concord_metrics.prompt_len = input_len
+        self.concord_metrics.output_len = output_len  
             
-    def get_expected_num_tokens(self, time: float) -> Tuple[int, int]:
-        expected_prompt_length = min(1, time - self.arrival_time / self.prefilling_deadline) * len(self.prompt_token_ids)
-        expected_output_length = min(1, time - self.prefilling_deadline / self.deadline) * self.predict_output_length
+    # Note(wei): this function rely on the predict_output_length
+    def get_expected_num_tokens(self, time: float) -> Tuple[int, int]: 
+        prefill_deadline = self.prefilling_deadline / 1000
+        deadline = self.deadline / 1000
+        serve_time = max(time - self.arrival_time, 0)
+        expected_prompt_length = min(1, serve_time / prefill_deadline) * len(self.prompt_token_ids)
+        expected_output_length = min(1, (serve_time - prefill_deadline)/ deadline) * self.predict_output_length
         return max(int(expected_prompt_length), 0), max(int(expected_output_length), 0)
     
-    def get_real_slo_gain(self) -> float:
-        real_prefilling_length, real_decoding_length = self.seqs[0].get_serving_len()
-        return service_compute(real_prefilling_length, real_decoding_length)
-    
-    def get_max_slo_gain(self) -> float:
-        max_prefilling_length = len(self.prompt_token_ids)
-        max_decoding_length = self.predict_output_length
-        return service_compute(max_prefilling_length, max_decoding_length)
+    # Note(wei): this function is used to calculate the service time of a request
+    # and would be influenced by predict decode length (rely on deadline)  
+    # There is actually another penatly for missing deadline, but we only use it in slo policy 
+    # But this function when requests in waiting queue seems to be zero
+    def service_compute(
+        self,
+        cur_time: float, 
+        time_between_token: float = 0.1,
+        consider_deadline: bool = False
+    ) -> float:
+        # cur_timr: s, serve_time: ms, time_between_token: s
+        prefill_len = self.seqs[0].get_prefill_len()
+        decode_len = self.seqs[0].get_output_len()
+        serve_time = (cur_time - self.arrival_time) * 1000
+        desire_prefill_len, desire_decode_len = self.get_expected_num_tokens(cur_time)
+
+        # If miss TTFT, we will degrade the prefill ratio
+        if serve_time <= self.prefilling_deadline:
+            prefill_ratio = 1
+        else:
+            prefill_ratio = min(1, (serve_time / self.prefilling_deadline) ** 2)
+
+        prefill_weight = RequestPhaseWeight.PREFILL.value * prefill_ratio * prefill_len
+
+        # For latency requests, we will degrade the decode ratio if not meet the real time deadline
+        if decode_len < desire_decode_len and self.request_type == RequestType.LATENCY:
+            decode_ratio = min(1, decode_len / desire_decode_len)
+        else:
+            decode_ratio = 1
+
+        # Note(Wei): only used in slo policy
+        deadline_penalty = 1
+        if consider_deadline and desire_decode_len > 0:
+            if decode_len == 0:
+                time_between_token *= 1000
+                predict_finish_time = serve_time + self.predict_output_length * time_between_token
+                deadline_penalty = min(1, self.deadline / serve_time)
+            else:
+                predict_finish_time = serve_time / (decode_len / desire_decode_len)
+                deadline_penalty = min(1, self.deadline / predict_finish_time)
+
+        decode_weight = RequestPhaseWeight.DECODE.value * decode_ratio * decode_len
+
+        return (prefill_weight + decode_weight) * deadline_penalty
+
+
+    # Note(wei): this function is used to calculate the delta service for a request if waiitng in slo policy
+    # and should return non-positive value, we measure the deadline penalty here
+    def delta_service_compute(
+        self,
+        cur_time: float, 
+        delta_time: float,
+        time_between_token: float = 0.1
+    ) -> float:
+        cur_service = self.service_compute(cur_time, time_between_token, True)
+        next_waiting_service = self.service_compute(cur_time + delta_time, time_between_token, True)
+
+        # logger.info(f"cur_service: {cur_service}, next_waiting_service: {next_waiting_service}")
+        assert next_waiting_service <= cur_service
+        
+        return next_waiting_service - cur_service
 
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0
