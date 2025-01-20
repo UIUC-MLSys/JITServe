@@ -996,7 +996,7 @@ class Scheduler:
         self.running = running_queue
         return force_preemption_count
         
-    def _schedule_prefills_v2(
+    def _schedule_concord_prefills(
         self,
         seq_group: SequenceGroup,
         num_new_tokens: int,
@@ -1064,7 +1064,7 @@ class Scheduler:
             seq_group=ScheduledSequenceGroup(seq_group, token_chunk_size=num_new_tokens),
         )
            
-    def _schedule_swapped_v2(
+    def _schedule_concord_swapped(
         self,
         seq_group: SequenceGroup,
         num_new_tokens: int,
@@ -1128,8 +1128,15 @@ class Scheduler:
             return False 
         return True
     
+    def _can_preempt(self, priority: float, victim_priority:float, 
+                                 preemption_overhead:float, is_waiting: bool) -> bool:
+        if is_waiting:
+            return priority < victim_priority + preemption_overhead
+        else:
+            return priority < victim_priority + 2 * preemption_overhead
+    
         
-    def _schedule_concord_preemption_v2(
+    def _schedule_concord_preemption(
         self,
         budget: SchedulingBudget,
         enable_chunking: bool = False,
@@ -1151,13 +1158,19 @@ class Scheduler:
         preemption_list.extend(running_list)
         
         # use to measure the loss of service gain for preemption
-        running_service_gain = sum([self.policy.get_priority(seq_group)[0] for seq_group in self.running])
+        running_priority_list = [self.policy.get_priority(seq_group) for seq_group in self.running]
+        running_priority_list = deque(sorted(running_priority_list))
+        running_service_gain = sum([priority[0] for priority in running_priority_list])
         preemption_loss = self.policy.measure_preemption_loss(running_service_gain)
+        # preemption_loss = 0
+        logger.info(f"Preemption loss: {preemption_loss}")
+        
         preemption_queue: Deque[SequenceGroup] = deque(preemption_list)
         preemption_queue = deque(sorted(preemption_queue, key=self.policy.get_priority))
         
-        # DEBUG
-        logger.info(f"Preemption loss: {preemption_loss}")
+        # for seq_group in preemption_queue:
+        #     print(f"Request {seq_group.request_id}, state:{seq_group.seqs[0].status} priority: {self.policy.get_priority(seq_group)}")
+
         force_preemption_count = 0
         
         running_result : SchedulerRunningOutputs = \
@@ -1216,13 +1229,17 @@ class Scheduler:
             not_update = False
 
             if num_new_tokens == 0:
-                # Note(wei): there is chance that the sequence group has just finished prefilling
+                # Debug(wei): there is chance that the sequence group has just finished prefilling
                 if len(seq_group.seqs) == 0:
                     logger.info(f"Sequence group status {seq_group_status}")
                     logger.info(f"Sequence group {seq_group.request_id} has no sequence")
                     not_update = True
                 elif seq_group.get_num_uncomputed_tokens() == 0:
-                    logger.info(f"Sequence group {seq_group.request_id} has just finished prefilling")
+                    if seq_group_status == SequenceStatus.SWAPPED and seq_group.is_finished():
+                        for seq in seq_group.get_seqs():
+                            seq.status = SequenceStatus.FINISHED_IGNORED
+                        swapped_in_result.infeasible_seq_groups.append(seq_group)
+                        self.swapped.remove(seq_group)
                     not_update = True
                 else:
                     stop_allocate = True
@@ -1248,8 +1265,14 @@ class Scheduler:
                 num_new_seqs=num_new_seqs) and num_blocks_number <= num_gpu_blocks_number:    
                 # Note(wei): All additional preemption conditions must be checked before adding to budget
                 if seq_group_status == SequenceStatus.WAITING or seq_group_status == SequenceStatus.SWAPPED:
-                    if self.policy.get_priority(seq_group)[0] >= preemption_loss:
+                    cur_priority = self.policy.get_priority(seq_group)[0]
+                    victim_priority = 0
+                    if len(running_priority_list) > 0:
+                        victim_priority = running_priority_list[-1][0]
+                    if not self._can_preempt(cur_priority, victim_priority, 
+                                         preemption_loss, seq_group_status == SequenceStatus.WAITING):
                         continue
+                # Debug(wei): This is used to avoid prefilling sequence groups preemption, only in debug mode    
                 if seq_group_status == SequenceStatus.WAITING and stop_preempt:
                     continue
             
@@ -1267,7 +1290,7 @@ class Scheduler:
                         scheduled_seq_group.token_chunk_size = num_new_tokens
                         running_result.prefill_seq_groups.append(scheduled_seq_group)
                         running_result.prefill_seq_groups_list.append(seq_group)
-                        stop_preempt = True
+                        # stop_preempt = True
                     else:
                         scheduled_seq_group.token_chunk_size = 1
                         running_result.decode_seq_groups.append(scheduled_seq_group)
@@ -1276,7 +1299,7 @@ class Scheduler:
                     # self.block_manager.append_slots
                 else:
                     if seq_group_status == SequenceStatus.WAITING and not stop_preempt:
-                        stop_preempt = True
+                        # stop_preempt = True
                         waiting_scheduled.append((seq_group, num_new_tokens, num_lookahead_slots))
 
                     elif seq_group_status == SequenceStatus.SWAPPED:
@@ -1293,6 +1316,9 @@ class Scheduler:
             # Note(wei): if num_new_tokens is 0, we do not preempt the sequence group
             # Just simply leave it in self.running and do not schedule it
             if seq_group_status == SequenceStatus.RUNNING and num_new_tokens > 0:
+                if seq_group.is_finished():
+                    self._free_finished_seq_group(seq_group)
+                    continue
                 logger.info(f"Preempting request {seq_group.request_id} in preemption")
                 preempt_mode = self._preempt(seq_group, running_result.blocks_to_swap_out, 
                                              PreemptionMode.SWAP)
@@ -1313,13 +1339,13 @@ class Scheduler:
                 more_new_tokens -= num_new_tokens
                 num_new_tokens += min(more_new_tokens, remain_token_budget)
                 budget._num_batched_tokens +=  min(more_new_tokens, remain_token_budget)
-            waiting_scheduled_result = self._schedule_prefills_v2(waiting_seq, num_new_tokens, 
+            waiting_scheduled_result = self._schedule_concord_prefills(waiting_seq, num_new_tokens, 
                                                              num_new_seqs, enable_chunking)
             prefill_result.seq_groups.append(waiting_scheduled_result.seq_group)
             
         for swapped_seq, num_new_tokens, num_lookahead_slots in swapped_scheduled:
             self.swapped.remove(swapped_seq)
-            swapped_scheduled_result = self._schedule_swapped_v2(swapped_seq, num_lookahead_slots, enable_chunking)
+            swapped_scheduled_result = self._schedule_concord_swapped(swapped_seq, num_lookahead_slots, enable_chunking)
             if swapped_scheduled_result.is_prefill:
                 swapped_in_result.prefill_seq_groups.append(swapped_scheduled_result.seq_group)
             else:
@@ -1344,98 +1370,6 @@ class Scheduler:
             running_result=running_result,
             force_preemption_count=force_preemption_count,
         )
-    
-    def _schedule_concord_preemption(
-        self,
-        budget: SchedulingBudget,
-        enable_chunking: bool = False,
-    ) -> Tuple[int, bool]:
-        """Sorts waiting and running queue. Also, force preempt requests
-        from the running queue if their priority is lower.
-        Priority-based preemption is used with the priority policy.
-        Args:
-            budget: The scheduling budget. The argument is in-place updated
-                when any requests are scheduled.
-        Returns:
-            A count of priority-based preemptions.
-        """
-
-        waiting_queue = self.waiting
-        swapped_queue = self.swapped
-        is_waiting = False
-        can_preempt = False
-        running_queue = deque(sorted(self.running, key=self.policy.get_priority))
-        prefilling_queue = deque()
-
-        blocks_to_swap_out: List[Tuple[int, int]] = []
-        force_preemption_count = 0
-        
-        if swapped_queue:
-            preemption_queue = swapped_queue
-            # logger.info("Swapped queue: %s", len(swapped_queue))
-        else:
-            is_waiting = True
-            preemption_queue = waiting_queue
-    
-        if preemption_queue:
-            seq_group = preemption_queue.popleft()
-            num_new_seqs = seq_group.get_max_num_running_seqs()
-            num_new_tokens = self._get_num_new_tokens(seq_group,
-                                                      SequenceStatus.WAITING if is_waiting else SequenceStatus.SWAPPED,
-                                                      enable_chunking, budget)
-            
-            #Only preempt if priority inversion exists and victim sequence is not prefill
-            while running_queue and self.policy.get_priority(
-                    running_queue[-1]) > self.policy.get_priority(seq_group):
-                #Only preempt if waiting sequence cannot be allocated
-                vseq_group = running_queue[-1]
-                can_preempt = self.block_manager.can_swap_out(vseq_group)
-                if can_preempt is False:
-                    break
-                can_allocate = self.block_manager.can_allocate(seq_group)
-                if (num_new_tokens and can_allocate == AllocStatus.OK
-                        and budget.can_schedule(num_new_tokens=num_new_tokens,
-                                                num_new_seqs=num_new_seqs)):
-                    break
-
-                #Adjust budget to remove the victim sequence group
-                vseq_group = running_queue.pop()
-                if enable_chunking and vseq_group.is_prefill():
-                    prefilling_queue.append(vseq_group)
-                    continue
-                
-                num_running_tokens = self._get_num_new_tokens(
-                    vseq_group, SequenceStatus.RUNNING, False, budget)
-                budget.subtract_num_batched_tokens(vseq_group.request_id,
-                                                   num_running_tokens)
-                num_running_seqs = vseq_group.get_max_num_running_seqs()
-                budget.subtract_num_seqs(vseq_group.request_id,
-                                         num_running_seqs)
-
-                #Preempt out the victim sequence group
-                # logger.info(f"Scheduled sequence group: {seq_group.request_id}")
-                # logger.info(f"Preempting sequence group: {vseq_group.request_id}")
-                self._preempt(vseq_group, blocks_to_swap_out,
-                              PreemptionMode.SWAP)
-                if is_waiting:
-                    swapped_queue.appendleft(vseq_group)
-                else:
-                    preemption_queue.appendleft(vseq_group)
-                force_preemption_count += 1
-            #Put the sequence back into the waiting queue
-            preemption_queue.appendleft(seq_group)
-
-        if is_waiting:
-            self.waiting = deque(sorted(preemption_queue, key=self.policy.get_priority))
-            if can_preempt:
-                self.swapped = deque(sorted(swapped_queue, key=self.policy.get_priority))
-        else:
-            # logger.info(f"Swapped queue after preemption: {len(swapped_queue)}")
-            self.swapped = deque(sorted(preemption_queue, key=self.policy.get_priority))
-        
-        running_queue.extend(prefilling_queue)    
-        self.running = running_queue
-        return force_preemption_count, is_waiting 
     
     def _schedule_prefills(
         self,
@@ -1469,6 +1403,8 @@ class Scheduler:
         ignored_seq_groups: List[SequenceGroup] = []
         seq_groups: List[ScheduledSequenceGroup] = []
 
+        if self.policy is not None:
+            self.waiting = deque(sorted(self.waiting, key=self.policy.get_priority))
         waiting_queue = self.waiting
 
         leftover_waiting_sequences: Deque[SequenceGroup] = deque()
@@ -1476,9 +1412,15 @@ class Scheduler:
             seq_group = waiting_queue[0]
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
-            assert len(waiting_seqs) == 1, (
-                "Waiting sequence group should have only one prompt "
-                "sequence.")
+            if len(waiting_seqs) != 1:
+                for seq in waiting_seqs:
+                    seq.status = SequenceStatus.FINISHED_IGNORED
+                ignored_seq_groups.append(seq_group)
+                waiting_queue.popleft()
+                continue
+            # assert len(waiting_seqs) == 1, (
+            #     "Waiting sequence group should have only one prompt "
+            #     "sequence.")
             num_new_tokens = self._get_num_new_tokens(seq_group,
                                                       SequenceStatus.WAITING,
                                                       enable_chunking, budget)
@@ -1624,7 +1566,7 @@ class Scheduler:
                                         seq_group.get_max_num_running_seqs())
                     budget.add_num_batched_tokens(seq_group.request_id,
                                         self._get_num_new_tokens(seq_group, SequenceStatus.RUNNING, True, budget))
-                preemption_result = self._schedule_concord_preemption_v2(budget, enable_chunking=False)
+                preemption_result = self._schedule_concord_preemption(budget, enable_chunking=False)
                 prefills = preemption_result.prefill_result
                 swapped_in = preemption_result.swapped_in_result
                 preemption_count = preemption_result.force_preemption_count
@@ -1712,7 +1654,7 @@ class Scheduler:
             preempted=preempted,
         )
 
-    def _schedule_chunked_prefill_concord_v2(self) -> SchedulerOutputs:
+    def _schedule_concord(self) -> SchedulerOutputs:
         """Schedule queued requests.
         
         Chunked prefill allows to chunk prefill requests, batch them together
@@ -1734,12 +1676,10 @@ class Scheduler:
         curr_loras: Set[int] = set()
         
         assert self.policy is not None
-        
-        self.free_finished_seq_groups()
 
-        preemption_result: SchedulerConcordPreemptionV2Outputs = self._schedule_concord_preemption_v2(budget, enable_chunking=True)
+        preemption_result: SchedulerConcordPreemptionV2Outputs = self._schedule_concord_preemption(budget, enable_chunking=True)
         prefills: SchedulerPrefillOutputs = preemption_result.prefill_result
-        swapped_in: SchedulerConcordSwappedInOutputs = preemption_result.swapped_in_result
+        swapped_in: SchedulerSwappedInOutputs = preemption_result.swapped_in_result
         running_scheduled: SchedulerRunningOutputs = preemption_result.running_result
         preemption_count: int = preemption_result.force_preemption_count
         
@@ -2032,12 +1972,12 @@ class Scheduler:
         """Schedule queued requests."""
         st = time.perf_counter()
         if self.scheduler_config.policy == "vtc":
-            return self._schedule_vtc()
+            result = self._schedule_vtc()
         elif self.scheduler_config.chunked_prefill_enabled:
             if self.policy is not None and self.policy.update_schedule_count():
                 if self._test_enough_swap_space():
                     logger.info(f"Concord preemption")
-                    result = self._schedule_chunked_prefill_concord_v2()
+                    result = self._schedule_concord()
                 else:
                     result = self._schedule_chunked_prefill()
             else:

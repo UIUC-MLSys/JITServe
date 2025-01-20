@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from typing import (Callable, Deque, Dict, Iterable, List, Optional, Set,
                     Tuple, Union)
-from vllm.request_info import RequestType, RequestTypeWeight, RequestPhaseWeight, service_compute
+from vllm.request_info import RequestType, RequestPhaseWeight
 from vllm.sequence import SequenceGroup, Sequence, SequenceStatus
 from vllm.logger import init_logger
 
@@ -46,16 +46,6 @@ class BasePolicy(ABC):
         '''
         Update the number of scheduler calls.
         '''
-        # if self.num_schedule_count % 200 == 0:
-        #     logger.info(f"Number of sequence groups: {len(self.seq_group_dict)}")
-        #     seq_priortiy = [(request_id, priority) for request_id, priority in self.seq_group_slo_dict.items()]
-        #     seq_priortiy = sorted(seq_priortiy, key=lambda x: x[1])
-        #     
-        #     if len(seq_priortiy) > 20:
-        #         logger.info(f"Top 10 sequence groups: {seq_priortiy[:10]}")
-        #         logger.info(f"Bottom 10 sequence groups: {seq_priortiy[-10:]}")
-        #     else:
-        #         logger.info(f"Sorted Sequence groups: {seq_priortiy}")
         self.num_schedule_count += 1
         self.seq_group_slo_dict = {}
         if self.num_schedule_count % self.schedule_interval == 0:
@@ -70,7 +60,7 @@ class BasePolicy(ABC):
         Update the interval time between two scheduler.
         '''
         if self.interval_time == -1:
-            self.interval_time = 0.06
+            self.interval_time = 2
         else:
             self.interval_time = self.interval_time * self.interval_update_ratio + (1 - self.interval_update_ratio) * (cur_time - self.last_schedule_time)
         self.last_schedule_time = cur_time
@@ -95,8 +85,6 @@ class BasePolicy(ABC):
                 self.seq_group_dict[seq_group.collection_id].remove(seq_group)
             if len(self.seq_group_dict[seq_group.collection_id]) == 0:
                 del self.seq_group_dict[seq_group.collection_id]
-        else:
-            raise ValueError("Invalid sequence group")
         
     def measure_preemption_loss(self, running_service_gain) -> float:
         '''
@@ -129,7 +117,7 @@ class FCFSPolicy(BasePolicy):
         '''
         Calculate the priority based on the order of arrival.
         '''
-        return seq_group.arrival_time
+        return (0, seq_group.arrival_time)
 
 
 class SJFPolicy(BasePolicy):
@@ -150,7 +138,7 @@ class SJFPolicy(BasePolicy):
         '''
         Calculate the priority based on the expected output length minus the actual output length.
         '''
-        return seq_group.predict_output_length - seq_group.seqs[0].get_output_len()
+        return (0, seq_group.predict_output_length - seq_group.seqs[0].get_output_len())
 
 
 class SRTFPolicy(BasePolicy):
@@ -170,7 +158,7 @@ class SRTFPolicy(BasePolicy):
         '''
         Calculate the priority based on the deadline of the sequence group.
         '''
-        return seq_group.deadline
+        return (0, seq_group.deadline)
 
 
 class SLOPoilicy(BasePolicy):
@@ -186,55 +174,55 @@ class SLOPoilicy(BasePolicy):
         super().__init__(schedule_interval)
         self.swap_in_time = 800
         self.swap_out_time = 800
-        self.max_num_preemption_time = 3
+        self.max_num_preemption_time = 20
         logger.info("SLO policy is used")
     
-    # def adjust_service_ratio(
-    #     self, 
-    #     seq_group: SequenceGroup,
-    #     serve_time: float,
-    #     deadline: float,
-    # ) -> float:
-    #     '''
-    #     Calculate the weighted decay factor for a given request type.
-    #     The decay factor is used to adjust the priority based on the ratio of real length to expected length.
-    #     '''
-    #     adjust_ratio = None
-    #     if seq_group.request_type == RequestType.LATENCY:
-    #         # Here we consider the importance of deliver speed for latency-sensitive requests
-    #         adjust_ratio = min(1, (real_len / desire_len))
-    #     elif seq_group.request_type == RequestType.THROUGHPUT:
-    #         # No decay for throughput-intensive requests
-    #         adjust_ratio = 1.0  
-    #     elif seq_group.request_type == RequestType.COLLECTIVE:
-    #         # MADD (Minimum Allocation for Desired Duration) for collective requests
-    #         # if seq_group.collection_id in self.collection_MADD_ratio:
-    #         #     return self.collection_MADD_ratio[seq_group.collection_id]
-    #         
-    #         real_alloc_ratio = real_len / seq_group.predict_output_length
-    #         
-    #         # Find the minimum serving ratio among all sequence groups in the same collection
-    #         col_alloc_ratio = real_alloc_ratio
-    #         for col_seq_group in self.seq_group_dict[seq_group.collection_id]:
-    #             if col_seq_group.request_id == seq_group.request_id:
-    #                 continue
-    #             col_alloc_ratio = min(col_alloc_ratio, col_seq_group.seqs[0].get_output_len() \
-    #                                             / col_seq_group.predict_output_length)
-    #         # The MADD ratio is the maximum of the desire serving ratio and the minimum collection serving ratio
-    #         MADD_serving_ratio = max(real_alloc_ratio / seq_group.get_max_slo_gain(), 
-    #                                    collection_serving_ratio)
-    #         
-    #         adjust_ratio = real_serving_ratio / MADD_serving_ratio    
-    #     else:
-    #         raise ValueError("Invalid request type")
-    #     
-    #     if adjust_ratio < TINY_LIFT:
-    #         adjust_ratio = TINY_LIFT
-    #         
-    #     # if seq_group.request_type == RequestType.COLLECTIVE:
-    #     #     self.collection_MADD_ratio[seq_group.collection_id] = adjust_ratio
-    #         
-    #     return adjust_ratio
+    #def adjust_service_ratio(
+    #    self, 
+    #    seq_group: SequenceGroup,
+    #    serve_time: float,
+    #    deadline: float,
+    #) -> float:
+    #    '''
+    #    Calculate the weighted decay factor for a given request type.
+    #    The decay factor is used to adjust the priority based on the ratio of real length to expected length.
+    #    '''
+    #    adjust_ratio = None
+    #    if seq_group.request_type == RequestType.LATENCY:
+    #        # Here we consider the importance of deliver speed for latency-sensitive requests
+    #        adjust_ratio = min(1, (serve_time / deadline) ** 2)
+    #    elif seq_group.request_type == RequestType.THROUGHPUT:
+    #        # No decay for throughput-intensive requests
+    #        adjust_ratio = 1.0  
+    #    elif seq_group.request_type == RequestType.COLLECTIVE:
+    #        # MADD (Minimum Allocation for Desired Duration) for collective requests
+    #        # if seq_group.collection_id in self.collection_MADD_ratio:
+    #        #     return self.collection_MADD_ratio[seq_group.collection_id]
+#
+    #        real_alloc_ratio = real_len / seq_group.predict_output_length
+#
+    #        # Find the minimum serving ratio among all sequence groups in the same collection
+    #        col_alloc_ratio = real_alloc_ratio
+    #        for col_seq_group in self.seq_group_dict[seq_group.collection_id]:
+    #            if col_seq_group.request_id == seq_group.request_id:
+    #                continue
+    #            col_alloc_ratio = min(col_alloc_ratio, col_seq_group.seqs[0].get_output_len() \
+    #                                            / col_seq_group.predict_output_length)
+    #        # The MADD ratio is the maximum of the desire serving ratio and the minimum collection serving ratio
+    #        MADD_serving_ratio = max(real_alloc_ratio / seq_group.get_max_slo_gain(), 
+    #                                   collection_serving_ratio)
+#
+    #        adjust_ratio = real_serving_ratio / MADD_serving_ratio    
+    #    else:
+    #        raise ValueError("Invalid request type")
+#
+    #    if adjust_ratio < TINY_LIFT:
+    #        adjust_ratio = TINY_LIFT
+#
+    #    # if seq_group.request_type == RequestType.COLLECTIVE:
+    #    #     self.collection_MADD_ratio[seq_group.collection_id] = adjust_ratio
+#
+    #    return adjust_ratio
     
     def soft_admission_control(
         self, 
@@ -245,14 +233,14 @@ class SLOPoilicy(BasePolicy):
         Perform soft admission control to determine whether the sequence group can be admitted.
         In this simplified version, it always returns True.
         '''
+        if serve_time < seq_group.deadline:
+            return 1
         return min(1, (seq_group.deadline / serve_time)**2)
     
     def measure_preemption_loss(self, running_service_gain) -> float:
         '''
         Calculate the priority for preemption.
         '''
-        logger.info(f"running_service_gain {running_service_gain}")
-        logger.info(f"interval_time {self.interval_time}")
         return running_service_gain / self.interval_time * PREEMPTION_OVERHEAD
     
     def get_priority(
@@ -268,35 +256,29 @@ class SLOPoilicy(BasePolicy):
         if self.seq_group_slo_dict.get(seq_group.request_id) is not None:
             return self.seq_group_slo_dict[seq_group.request_id]
         
-        # update the predict output length if it is not default value (1024)
+        # Notw(wei): update the predict output length if it is not default value (1024)
         if seq_group.request_info.output_len != 1024:
             seq_group.predict_output_length = seq_group.request_info.output_len
         
+        # Notw(wei): Prevent the sequence group from being preempted too many times
         if seq_group.num_cumulative_preemption > self.max_num_preemption_time:
             self.seq_group_slo_dict[seq_group.request_id] = (-MAX_PRIORITY, seq_group.arrival_time)
             return (-MAX_PRIORITY, seq_group.arrival_time)
         
-        cur_time = self.last_schedule_time
+        cur_time = time.time()
         
-        real_input_len, real_output_len = seq_group.seqs[0].get_serving_len()
-        expected_input_len, expected_output_len = seq_group.get_expected_num_tokens(cur_time)
+        # if delta_service equals to zero, it means the sequence group has missed the deadline
+        time_between_token = self.interval_time / self.schedule_interval
+        delta_time = self.interval_time
+        delta_service = seq_group.delta_service_compute(cur_time, delta_time, time_between_token) 
         
-        # Compute the delta_input_token and delta_output_token
-        max_input_len = seq_group.seqs[0].get_prompt_len()
-        max_output_len = seq_group.predict_output_length if seq_group.predict_output_length > real_output_len \
-            else real_output_len + self.schedule_interval
-        delta_input_token = max_input_len - real_input_len
-        delta_output_token = min(max_output_len - real_output_len, self.schedule_interval)
+        # serve_time = max((cur_time - seq_group.arrival_time) * 1000, 0)
+        # sigma = self.soft_admission_control(seq_group, serve_time)
+        # # alpha = self.adjust_service_ratio(serve_time, seq_group.deadline)
+        # alpha = 1
+        # logger.info(f"delta_service: {delta_service}, sigma: {sigma}")
         
-        is_latency = seq_group.request_type == RequestType.LATENCY
-        delta_service = service_compute(delta_input_token, delta_output_token, is_latency,
-                                        real_input_len, real_output_len, expected_input_len, expected_output_len)
-        
-        serve_time = (self.last_schedule_time - seq_group.arrival_time) * 1000
-        sigma = self.soft_admission_control(seq_group, serve_time)
-        
-        concord_priority = (-delta_service * sigma, seq_group.arrival_time)
-        # concord_priority = (0, seq_group.arrival_time)
+        concord_priority = (-delta_service, seq_group.arrival_time)
         self.seq_group_slo_dict[seq_group.request_id] = concord_priority
         seq_group.slo_priority = concord_priority
         return concord_priority
