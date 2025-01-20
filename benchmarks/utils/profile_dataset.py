@@ -20,9 +20,11 @@ DELIVERY_SPEED = 10
 NORMAL_MEAN = 5
 NORMAL_VAR = 0.5
 # lambda for poisson distribution delivery time
-POISSON_LAMBDA = 200
+POISSON_LAMBDA = 400
 # number of requests
-NEW_REQUESTS_NUMBER = 4000
+NEW_REQUESTS_NUMBER = 2000
+# request ratio
+REQUEST_RATIO = [0.772, 0.218, 0.01]
 # TODO: use BurstGPT trace
 IS_BURST = False
 
@@ -32,17 +34,17 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 
 test_trace_path = None
 test_trace_save_path = None
-trace_path = '../poisson-600-deadline-5.json'
+trace_path = '../dataset/trace/p200-d10-n4000.json'
 trace_save_path = None
 
-def adjust_request_type(results, adapt_ratio):
+def adjust_request_type(trace: List[RequestFormat], adapt_ratio):
     assert sum(adapt_ratio) == 1
-    num_results = len(results)
+    num_trace = len(trace)
     num_types = len(adapt_ratio)
     
     # Calculate the number of each type
-    type_counts = [int(num_results * ratio) for ratio in adapt_ratio]
-    type_counts[-1] = num_results - sum(type_counts[:-1])
+    type_counts = [int(num_trace * ratio) for ratio in adapt_ratio]
+    type_counts[-1] = num_trace - sum(type_counts[:-1])
     
     # Create an array with the specified number of each type
     types = []
@@ -50,8 +52,15 @@ def adjust_request_type(results, adapt_ratio):
         types.extend([i] * count)
     np.random.shuffle(types)
     
-    for i, result in enumerate(results):
-        results[i]["request_type"] = types[i]
+    for i, result in enumerate(trace):
+        if types[i] == 0:
+            trace[i].request_type = RequestType.Latency
+        elif types[i] == 1:
+            trace[i].request_type = RequestType.Throughput
+        else:
+            trace[i].request_type = RequestType.Collective
+        
+    return trace
         
 
 def adjust_deadline(results):
@@ -82,7 +91,7 @@ def adjust_data_length(results, new_len):
         new_results.extend(results[:leftover_len])
         results = new_results
     else:
-        results = results[:len]
+        results = results[:new_len]
     return results
     
 def save_trace(results, save_path):
@@ -162,15 +171,20 @@ async def call_vllm_api(trace: List[RequestFormat]):
     return results
 
 async def main(trace, trace_save_path=None):
-    trace = [Trace.load_trace(trace_path)[0]]
+    with open(trace_path, 'r', encoding='utf-8') as f:
+        trace_list = json.load(f)
+    #trace = []
+    #for req in trace_list:
+    #    trace.append(RequestFormat.from_dict(req))
     
-    # trace = adjust_request_type(trace, [0.5, 0.3, 0.2])
-    # print("Finish adjusting request type")
+    #trace = adjust_request_type(trace, REQUEST_RATIO)
+    #print("Finish adjusting request type")
 
-    results = await call_vllm_api(trace)
-    print("Finish calling VLLM API")
-    results = adjust_deadline(results)
-    print("Finish Adjusting deadlines")
+    #results = await call_vllm_api(trace)
+    #print("Finish calling VLLM API")
+    results = trace_list
+    #results = adjust_deadline(results)
+    #print("Finish Adjusting deadlines")
     results = adjust_deliver_time(results)
     print("Finish Adjusting deliver times")
     results = adjust_data_length(results, NEW_REQUESTS_NUMBER)
@@ -178,7 +192,8 @@ async def main(trace, trace_save_path=None):
     
     if trace_save_path is None:
         model_name = MODEL_NAME.split("/")[-1]
-        trace_save_path = f"{model_name}-p{POISSON_LAMBDA}-d{DELIVERY_SPEED}-n{NEW_REQUESTS_NUMBER}.json"
+        # trace_save_path = f"{model_name}-p{POISSON_LAMBDA}-d{DELIVERY_SPEED}-n{NEW_REQUESTS_NUMBER}.json"
+        trace_save_path = f"../dataset/trace/p{POISSON_LAMBDA}-d{DELIVERY_SPEED}-n{NEW_REQUESTS_NUMBER}.json"
     print(f"Saving trace to {trace_save_path}")
     save_trace(results, trace_save_path)
 

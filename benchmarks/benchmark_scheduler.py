@@ -243,7 +243,7 @@ async def benchmark(
     max_concurrency: Optional[int],
     max_output_len: int,
 ):
-    requests = [trace[0]]
+    requests = trace
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
@@ -305,7 +305,7 @@ async def benchmark(
                     input_requests=input_requests,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=1000,
+                    client_deadline=2000,
                     api_url=api_url,
                     pbar=pbar,
                 )
@@ -498,7 +498,16 @@ def main(args: argparse.Namespace):
         
         if not os.path.exists(file_dir):
             os.makedirs(file_dir)
-        file_name = f"{file_dir}/{base_model_id}-{args.policy}-{'chunked' if args.chunked else 'normal'}-small.json"
+        try:
+            if args.trace_path is not None:
+                possion_lambda = args.trace_path.split("/")[-1].split("-")[0]
+                deliver_speed = args.trace_path.split("/")[-1].split("-")[1]
+                num_request = args.trace_path.split("/")[-1].split("-")[2].split(".")[0]
+        except:
+            possion_lambda = "None"
+            deliver_speed = "None"
+            num_request = "None"
+        file_name = f"{file_dir}/{base_model_id}-{args.policy}-b{args.batch_size}-{possion_lambda}-{deliver_speed}-{num_request}-{current_dt}.json"
         print(f"Saving benchmark results to {file_name}")
         with open(file_name, "w", encoding='utf-8') as outfile:
             json.dump(result_json, outfile, indent=4, ensure_ascii=False)
@@ -524,8 +533,14 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="test-swap.json",
+        default="dataset/trace/p400-d10-n1000.json",
         help="Path to the trace file.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for each request.",
     )
     parser.add_argument(
         "--max-concurrency",

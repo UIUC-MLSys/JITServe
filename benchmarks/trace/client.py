@@ -312,10 +312,10 @@ async def send_collective_request(
             output.success_num_requests = num_requests
             if num_requests == success_num_request:
                 output.success = True
-                if output.task_latency <= request_info.request.deadline:
+                if output.task_latency <= request_info.request.deadline / 1000:
                     output.finish_before_ddl = True
                 else:
-                    output.request_service_gain *= request_info.request.deadline / output.task_latency
+                    output.request_service_gain *= (request_info.request.deadline / 1000) / output.task_latency
                     output.finish_before_ddl = False
             else:
                 output.success = False
@@ -344,7 +344,7 @@ async def send_request(
     Send requests to the model and return the responses.
     '''
     api_url = request_info.api_url
-    timeout = aiohttp.ClientTimeout(total=client_deadline, sock_read=300)
+    # timeout = aiohttp.ClientTimeout(total=client_deadline, sock_read=300)
     output = RequestOutput()
     output.type = request_info.request.request_type.value
     output.task_input = request_info.request.prompt  
@@ -411,11 +411,11 @@ async def send_request(
                     output_text = parse_output(generated_text, input_length)
                     output.task_output = output_text
                     output.request_output.append(output_text)
-
-                    if output.task_latency <= request_info.request.deadline:
+                    
+                    if output.task_latency <= request_info.request.deadline / 1000:
                         output.finish_before_ddl = True
                     else:
-                        output.request_service_gain *= request_info.request.deadline / output.task_latency
+                        output.request_service_gain *= (request_info.request.deadline / 1000) / output.task_latency
                         output.finish_before_ddl = False
                 else:
                     output.error = response.reason or ""
