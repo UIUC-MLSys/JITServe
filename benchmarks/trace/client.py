@@ -97,6 +97,7 @@ async def get_request(
 
 async def send_collective_request(
     request_info: RequestInput, 
+    tot_structure: Tuple[int, int],
     client_deadline: float = 20,
     pbar: Optional[tqdm] = None,
     is_stream: bool = True,
@@ -109,11 +110,10 @@ async def send_collective_request(
     output_list: List[RequestOutput] = []
     
     # ToT parameters
-    num_thoughts = 3
-    tot_round = 2
+    num_thoughts, tot_round = tot_structure
     n = num_thoughts
     best_of = num_thoughts
-    success_num_request = (n + 1) + (n * best_of + 1) * (tot_round - 1)
+    total_num_request = (n + 1) + (n * best_of + 1) * (tot_round - 1)
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
@@ -291,7 +291,7 @@ async def send_collective_request(
             ed = time.perf_counter()
             task_latency = ed - st
             if task_latency > request_info.request.deadline / 1000:
-                slo_violation_penalty = min(1, ((request_info.request.deadline / 1000) / output.task_latency)**2)
+                slo_violation_penalty = min(1, ((request_info.request.deadline / 1000) / task_latency)**2)
                 for output in output_list:
                     output.finish_before_ddl = False
                     output.request_service_gain *= slo_violation_penalty
@@ -314,7 +314,7 @@ async def send_request(
     client_deadline: float = 20,
     pbar: Optional[tqdm] = None,
     is_stream: bool = True,
-    ) -> RequestOutput:
+    ) -> List[RequestOutput]:
     '''
     Send requests to the model and return the responses.
     '''
@@ -325,10 +325,7 @@ async def send_request(
     
     output = RequestOutput()
     output.request_type = request_info.request.request_type.value
-    output.request_input = request_info.request.prompt 
-    
-    if request_info.request.request_type == RequestType.Latency:
-        request_info.request.deadline = (1 + request_info.request.output_len * 0.1) * 1000
+    output.request_input = request_info.request.prompt
     
     timeout = aiohttp.ClientTimeout(total=client_deadline)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -379,19 +376,19 @@ async def send_request(
                 else:
                     output.success = False
                     output.error = response.reason or ""
-                    return output
+                    return [output]
         except Exception:
             output.success = False
             exc_info = sys.exc_info()
             output.error = "".join(traceback.format_exception(*exc_info))
-            return output
+            return [output]
 
     if pbar is not None:
         pbar.update(1)
                     
     output.success = True
     output.request_finish_time = time.perf_counter()
-    return output
+    return [output]
 
 
 async def client_simulator(
@@ -402,6 +399,7 @@ async def client_simulator(
     client_id: int,
     client_deadline: int,
     api_url: str,
+    tot_structure: Tuple[int, int],
     pbar: Optional[tqdm] = None,
     ) -> List[RequestOutput]:
     '''
@@ -417,12 +415,13 @@ async def client_simulator(
         deadline = client_deadline
 
         if request.request_type == RequestType.Collective:
-            tasks.append(asyncio.create_task(send_collective_request(request_info, deadline, pbar)))
+            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, deadline, pbar)))
         else:
             tasks.append(asyncio.create_task(send_request(request_info, deadline, pbar)))
         
-    outputs: List[RequestOutput] = await asyncio.gather(*tasks)
-    for output in outputs:
-        output.request_finish_time = [x - start_time for x in output.request_finish_time]
+    outputs: List[List[RequestOutput]] = await asyncio.gather(*tasks)
+    for output_list in outputs:
+        for output in output_list:
+            output.request_finish_time -= start_time
     
     return outputs

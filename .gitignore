@@ -208,6 +208,15 @@ benchmarks/*.csv
 
 # Benchmark results
 vllm/entrypoints/result-*.txt
+result/
+benchmarks_results/
+benchmarks_results_old/
+t-*.txt
+
+# Simulation results
+simulate.sh
+simulator.py
+simulation_*_*.txt
 
 # Test results
 test-connection/

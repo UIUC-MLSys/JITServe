@@ -260,6 +260,20 @@ def print_benchmark_results(metrics: BenchmarkMetrics, time_window_seconds: floa
                 gains[2],  # Collective
                 gains[3],  # Total
             ))
+        
+        # print total service gain of all time windows
+        total_gains = [0.0, 0.0, 0.0, 0.0]
+        for _, gains in sorted_windows:
+            for i in range(4):
+                total_gains[i] += gains[i]
+        print("-" * 80)
+        print("{:<10} {:<15.2f} {:<15.2f} {:<15.2f} {:<15.2f}".format(
+            "Total",
+            total_gains[0],  # Latency
+            total_gains[1],  # Throughput
+            total_gains[2],  # Collective
+            total_gains[3],  # Total
+        ))
         print("=" * 80)
     print_time_window_gain(metrics)
     print(header_separator)
@@ -271,6 +285,7 @@ async def benchmark(
     tokenizer: PreTrainedTokenizerBase,
     trace: List[RequestFormat],
     logprobs: Optional[int],
+    num_prompts: int,
     n: int,
     best_of: int,
     request_rate: List[float],
@@ -284,7 +299,11 @@ async def benchmark(
     slo_constraint: Tuple[float, float, float], # (ttft, tbt, ttlt)
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
 ):
-    requests = trace
+    trace_len = len(trace)
+    requests = (trace * (num_prompts // trace_len + 1))[:num_prompts]
+    
+    for id, request in enumerate(requests):
+        request.collection_id = id
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
@@ -351,7 +370,7 @@ async def benchmark(
                     burst=burst,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=2000,
+                    client_deadline=6000,
                     api_url=api_url,
                     tot_structure=tot_structure,
                     pbar=pbar,
@@ -409,7 +428,7 @@ def main(args: argparse.Namespace):
         "model_id": model_id,
         "tokenizer_id": tokenizer_id,
         "best_of": args.best_of,
-        "num_prompts": len(trace),
+        "num_prompts": args.num_prompts,
         "arrival_rate": args.arrival_rate,
         "user_request_rate": args.user_request_rate,
         "poisson_lambda": args.poisson_lambda,
@@ -433,6 +452,7 @@ def main(args: argparse.Namespace):
             tokenizer=tokenizer,
             trace=trace,
             logprobs=args.logprobs,
+            num_prompts=args.num_prompts,
             n=args.n,
             best_of=args.best_of,
             request_rate=request_rate,
@@ -470,8 +490,14 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="dataset/trace/alpaca.json",
+        default="benchmarks/dataset/trace/alpaca.json",
         help="Path to the trace file.",
+    )
+    parser.add_argument(
+        "--num-prompts",
+        type=int,
+        default=1000,
+        help="Number of prompts in the benchmark.",
     )
     parser.add_argument(
         "--batch-size",
