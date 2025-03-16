@@ -684,7 +684,7 @@ def unified_flash_attention(
                 alibi_slopes=alibi_slopes,
                 softcap=logits_soft_cap,
             )
-        else:
+        elif not (query.shape[0] == 0 and kv_cache.numel() > 0 and key_cache.shape[0] != 0):
             # prefix-enabled attention
             assert prefill_meta.seq_lens is not None
             max_seq_len = max(prefill_meta.seq_lens)

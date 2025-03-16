@@ -530,7 +530,12 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         if status == SequenceStatus.WAITING:
             check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
 
-            seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+            seq = seq_group.get_seqs(status=SequenceStatus.WAITING)
+            if seq == []:
+                for seq in seq_group.get_seqs():
+                    print(f"seq_id: {seq.seq_id}, status: {seq.status}")
+                return 0
+            seq = seq[0]
             num_blocks_touched = BlockTable.get_num_required_blocks(
                 seq.get_token_ids(),
                 block_size=self.block_size,
