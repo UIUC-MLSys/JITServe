@@ -7,6 +7,7 @@ change `vllm/entrypoints/openai/api_server.py` instead.
 """
 import asyncio
 import json
+import numpy as np
 import pickle
 import socket
 import ssl
@@ -44,7 +45,6 @@ prediction_tokenizer = None
 
 # Graph matching
 use_graph_matching = False
-graph_matching_lock = threading.Lock()
 collection_graph_set: Set[Graph] = set()
 collection_graph_unfinished_dict: Dict[int, ToTStructure] = dict()
 
@@ -98,16 +98,12 @@ async def generate(request: Request) -> Response:
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id
     request_info = RequestInfo.from_json(request_info)
-    request_info.output_len = 1024
     request_id = random_uuid()
     
     if use_prediction:
         # using network socket to send request to prediction model
+        request_info.output_len = 1024
         threading.Thread(target=send_and_update_request_info, args=(request_info, prompt), daemon=True).start()
-        # using async_predict to send request to prediction model
-        # prediction_task: asyncio.Task = asyncio.create_task(async_predict(prediction_tokenizer, 
-        #                                                     prediction_model, [prompt], request_info))
-        
     
     if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
         collection_id = request_info.collection_id
@@ -204,12 +200,12 @@ async def init_app(
     engine_args = AsyncEngineArgs.from_cli_args(args)
 
     if not args.disable_prediction:
-        if engine_args.scheduling_policy in ['sjf', 'slo']:
+        if engine_args.scheduling_policy in ['sjf', 'concord']:
             use_prediction = True
             logger.info(f"Prediction model is enabled")
             
     if not args.disable_graph_matching:
-        if engine_args.scheduling_policy in ['slo', 'srtf']:
+        if engine_args.scheduling_policy in ['concord', 'srtf']:
             use_graph_matching = True
             logger.info(f"Graph matching is enabled")
         

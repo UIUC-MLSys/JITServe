@@ -10,7 +10,7 @@ from typing import Set, Tuple, Union
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
-from vllm.core.policy import SJFPolicy, SRTFPolicy, SLOPoilicy, concord_support_policy
+from vllm.core.policy import BasePolicy
 from vllm.core.vtc_scheduler import VTCReqQueue
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -439,34 +439,27 @@ class Scheduler:
             sliding_window=self.cache_config.sliding_window,
             enable_caching=self.cache_config.enable_prefix_caching)
         
-        # DEBUG
+        # DEBUG,TODO: remove
         self.scheudle_cnt = 0
         self.scheudle_time = 0
         self.swap_in_time = 0
         self.swap_in_count = 0
         self.swap_out_time = 0
         self.swap_out_count = 0
-        self.preemption_time = 0
         self.total_preemption_time = 0
-        self.post_preemption_time = 0
-        self.post_preemption_count = 0
-        self.preemption_loop_count = 0
-        
-        self.policy = SLOPoilicy() if scheduler_config.policy == "slo" else \
-            SJFPolicy() if scheduler_config.policy == "sjf" else \
-            SRTFPolicy() if scheduler_config.policy == "srtf" else None
-        
-        # logger.info("Scheduler policy: %s", scheduler_config.policy)
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
         # TODO(zhiyu): could modify num_gpu_blocks*cache_config.block_size if really OOM
-        self.waiting = deque() if \
-                        self.scheduler_config.policy != "vtc" \
-                            else VTCReqQueue(num_gpu_blocks, cache_config.block_size, 
-                                             self.scheduler_config.max_num_batched_tokens,
-                                             self.scheduler_config.max_num_seqs, 
-                                             self.scheduler_config.max_model_len)
+        if scheduler_config.policy.lower() == "vtc":
+            self.policy = None
+            self.waiting = VTCReqQueue(num_gpu_blocks, cache_config.block_size,
+                                       self.scheduler_config.max_num_batched_tokens,
+                                       self.scheduler_config.max_num_seqs, 
+                                       self.scheduler_config.max_model_len)
+        else:
+            self.policy: BasePolicy = BasePolicy._get_policy_cls(scheduler_config.policy)()
+            self.waiting = deque()
         # Sequence groups in the RUNNING state.
         # Contain decode requests.
         self.running: Deque[SequenceGroup] = deque()
@@ -738,7 +731,7 @@ class Scheduler:
 
                 # Do preemption
                 if do_preempt:
-                    logger.info(f"Preempting request {victim_seq_group.request_id} in running")
+                    # logger.info(f"Preempting request {victim_seq_group.request_id} in running")
                     preempted_mode = self._preempt(victim_seq_group,
                                                    blocks_to_swap_out, preemption_mode=PreemptionMode.SWAP)
                     if preempted_mode == PreemptionMode.RECOMPUTE:
@@ -873,7 +866,7 @@ class Scheduler:
             if lora_int_id > 0 and curr_loras is not None:
                 curr_loras.add(lora_int_id)
             swapped_queue.popleft()
-            logger.info(f"Swapping in request {seq_group.request_id} in swapped")
+            # logger.info(f"Swapping in request {seq_group.request_id} in swapped")
             self._swap_in(seq_group, blocks_to_swap_in)
             self._append_slots(seq_group, blocks_to_copy, enable_chunking)
             is_prefill = seq_group.is_prefill()
@@ -1120,7 +1113,6 @@ class Scheduler:
             blocks_to_copy=blocks_to_copy,
         ) 
         
-    
     def _test_enough_swap_space(self) -> bool:
         num_cpu_blocks_number = self.block_manager.get_num_free_cpu_blocks()
         num_cpu_total_blocks_number = self.block_manager.num_total_cpu_blocks
@@ -1134,7 +1126,6 @@ class Scheduler:
             return priority < victim_priority + preemption_overhead
         else:
             return priority < victim_priority + 2 * preemption_overhead
-    
         
     def _schedule_concord_preemption(
         self,
@@ -1158,18 +1149,16 @@ class Scheduler:
         preemption_list.extend(running_list)
         
         # use to measure the loss of service gain for preemption
-        running_priority_list = [self.policy.get_priority(seq_group) for seq_group in self.running]
-        running_priority_list = deque(sorted(running_priority_list))
-        running_service_gain = sum([priority[0] for priority in running_priority_list])
-        preemption_loss = self.policy.measure_preemption_loss(running_service_gain)
-        # preemption_loss = 0
-        logger.info(f"Preemption loss: {preemption_loss}")
+        priority_list = [(self.policy.get_priority(seq_group), seq_group) for seq_group in preemption_list]
+        priority_list = sorted(priority_list, key=lambda x: x[0])
+        running_priority_list = [x for x in priority_list if x[1] in self.running]
+        request_utility = sum([priority[0][0] for priority in priority_list])
+        if len(priority_list) == 0:
+            preemption_loss = 0
+        else:
+            preemption_loss = request_utility / len(priority_list)
         
-        preemption_queue: Deque[SequenceGroup] = deque(preemption_list)
-        preemption_queue = deque(sorted(preemption_queue, key=self.policy.get_priority))
-        
-        # for seq_group in preemption_queue:
-        #     print(f"Request {seq_group.request_id}, state:{seq_group.seqs[0].status} priority: {self.policy.get_priority(seq_group)}")
+        preemption_queue = deque([seq_group for _, seq_group in priority_list])
 
         force_preemption_count = 0
         
@@ -1264,14 +1253,15 @@ class Scheduler:
                 budget.can_schedule(num_new_tokens=num_new_tokens,
                 num_new_seqs=num_new_seqs) and num_blocks_number <= num_gpu_blocks_number:    
                 # Note(wei): All additional preemption conditions must be checked before adding to budget
-                if seq_group_status == SequenceStatus.WAITING or seq_group_status == SequenceStatus.SWAPPED:
-                    cur_priority = self.policy.get_priority(seq_group)[0]
-                    victim_priority = 0
-                    if len(running_priority_list) > 0:
-                        victim_priority = running_priority_list[-1][0]
-                    if not self._can_preempt(cur_priority, victim_priority, 
-                                         preemption_loss, seq_group_status == SequenceStatus.WAITING):
-                        continue
+                if self.scheduler_config.policy == "concord":
+                    if seq_group_status == SequenceStatus.WAITING or seq_group_status == SequenceStatus.SWAPPED:
+                        cur_priority = self.policy.get_priority(seq_group)[0]
+                        victim_priority = 0
+                        if len(running_priority_list) > 0:
+                            victim_priority = running_priority_list[-1][0][0]
+                        if not self._can_preempt(cur_priority, victim_priority, 
+                                             preemption_loss, seq_group_status == SequenceStatus.WAITING):
+                            continue
                 # Debug(wei): This is used to avoid prefilling sequence groups preemption, only in debug mode    
                 if seq_group_status == SequenceStatus.WAITING and stop_preempt:
                     continue
@@ -1305,8 +1295,6 @@ class Scheduler:
                     elif seq_group_status == SequenceStatus.SWAPPED:
                         swapped_scheduled.append((seq_group, num_new_tokens, num_lookahead_slots))
                     
-                    preemption_loss += preemption_loss
-                    
                 continue
             # Running out of budget
             elif not not_update:
@@ -1319,7 +1307,7 @@ class Scheduler:
                 if seq_group.is_finished():
                     self._free_finished_seq_group(seq_group)
                     continue
-                logger.info(f"Preempting request {seq_group.request_id} in preemption")
+                # logger.info(f"Preempting request {seq_group.request_id} in preemption")
                 preempt_mode = self._preempt(seq_group, running_result.blocks_to_swap_out, 
                                              PreemptionMode.SWAP)
                 if preempt_mode == PreemptionMode.SWAP:
@@ -1683,7 +1671,6 @@ class Scheduler:
         running_scheduled: SchedulerRunningOutputs = preemption_result.running_result
         preemption_count: int = preemption_result.force_preemption_count
         
-
         assert (budget.num_batched_tokens <=
                 self.scheduler_config.max_num_batched_tokens)
         assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
@@ -1974,12 +1961,8 @@ class Scheduler:
         if self.scheduler_config.policy == "vtc":
             result = self._schedule_vtc()
         elif self.scheduler_config.chunked_prefill_enabled:
-            if self.policy is not None and self.policy.update_schedule_count():
-                if self._test_enough_swap_space():
-                    logger.info(f"Concord preemption")
-                    result = self._schedule_concord()
-                else:
-                    result = self._schedule_chunked_prefill()
+            if self.policy != "fcfs" and self.policy.update_schedule_count() and self._test_enough_swap_space():
+                result = self._schedule_concord()
             else:
                 result = self._schedule_chunked_prefill()
         else:
@@ -2207,9 +2190,11 @@ class Scheduler:
 
         # Free finished seqs
         self._free_finished_seqs(seq_group)
+        # seq_group.concord_metrics.TTLT = time.time() - seq_group.arrival_time
+        # seq_group.concord_metrics.service_gain += seq_group.service_compute(time.time())
         
     def _update_seq_group_metrics(self) -> None:
-        cur_time = time.perf_counter()
+        cur_time = time.time()
         for running_seq_group in self.running:
             running_seq_group.update_concord_metrics(cur_time)
 

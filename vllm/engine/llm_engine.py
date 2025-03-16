@@ -1087,7 +1087,6 @@ class LLMEngine:
             (outputs, seq_group_metadata_list, scheduler_outputs, is_async,
              is_last_step, is_first_step_output,
              skip) = ctx.output_queue.popleft()
-            
             # logger.info(f"Processing {len(seq_group_metadata_list)} outputs below")
             # if len(seq_group_metadata_list) > 0:
             #     logger.info(f"Seq group metadata list: {seq_group_metadata_list[0].request_id}")
@@ -1149,6 +1148,11 @@ class LLMEngine:
             if has_multiple_outputs:
                 output = outputs_by_sequence_group[i]
             else:
+                if len(outputs_by_sequence_group[0]) <= i:
+                    # This can happen when the sequence group is ignored
+                    # (e.g. when the sequence group is a delta request)
+                    # seq_group.first_seq.data.set_decode_stage()
+                    continue
                 output = [outputs_by_sequence_group[0][i]]
 
             if not is_async:
