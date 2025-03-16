@@ -209,5 +209,9 @@ benchmarks/*.csv
 # Benchmark results
 vllm/entrypoints/result-*.txt
 
+# Test results
+test-connection/
+benchmarks/utils/*.png
+
 # Linting
 actionlint
