@@ -137,8 +137,11 @@ class RequestConcordMetrics:
         self.arrival_time: float = arrival_time
         self.prompt_len: int = 0
         self.output_len: int = 0
-        self.time_to_first_token: float = None
-        self.time_between_token: List[float] = []
+        self.TTFT: float = None
+        self.TBT: List[float] = []
+        self.TTLT: float = None
+        self.new_prefill_tokens: int = 0
+        self.new_decode_tokens: int = 0
         # should set to None when in swapped/waiting queue
         self.last_schedule_time: float = None
         self.service_gain: float = 0
@@ -345,6 +348,9 @@ class SequenceData(msgspec.Struct,
         # If all tokens are computed, it means it is in decoding phase.
         if self.get_num_uncomputed_tokens() == 0:
             self._stage = SequenceStage.DECODE
+            
+    def set_decode_stage(self):
+        self._stage = SequenceStage.DECODE
 
     def reset_state_for_recompute(self) -> None:
         """Reset the number of computed tokens from this sequence. It is
@@ -744,15 +750,16 @@ class SequenceGroup:
         self.num_cumulative_preemption = 0
         self.slo_priority = 0
         self.collection_id = request_info.collection_id
-        self.deadline = request_info.deadline
-        self.prefilling_deadline = min(5000, self.deadline / 2)
+        self.deadline = request_info.deadline / 1000
+        self.TTFT_constraint = 1
+        self.TBT_constraint = 0.1
         self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
         self.request_weight = request_info.request_weight
         self.prediction_task = request_info.prediction_task
         self.real_output_len = request_info.real_output_len
         self.request_info = request_info
-        self.concord_metrics = RequestConcordMetrics(time.perf_counter())
+        self.concord_metrics = RequestConcordMetrics(time.time())
 
         self.cached_request_output = None
 
@@ -896,34 +903,28 @@ class SequenceGroup:
         output_len = seq.get_output_len()
         input_len = seq.get_prompt_len()
         
-        if output_len > 1 and self.concord_metrics.time_to_first_token is None:
-            self.concord_metrics.time_to_first_token = cur_time - self.concord_metrics.arrival_time
+        if output_len >= 1 and self.concord_metrics.TTFT is None:
+            self.concord_metrics.TTFT = cur_time - self.concord_metrics.arrival_time
+            self.concord_metrics.service_gain += self.service_compute(cur_time)
                 
         delta_input_length = input_len - self.concord_metrics.prompt_len 
         delta_output_lenth = output_len - self.concord_metrics.output_len
+        self.concord_metrics.new_prefill_tokens = delta_input_length
+        self.concord_metrics.new_decode_tokens = delta_output_lenth
         # compute service gain
 
-        self.concord_metrics.service_gain = self.service_compute(time.time())
+        self.concord_metrics.service_gain += self.service_compute(time.time())
         if self.concord_metrics.last_schedule_time is not None and \
             delta_output_lenth > 0:
                 delta_time = cur_time - self.concord_metrics.last_schedule_time
-                self.concord_metrics.time_between_token.append(delta_time / delta_output_lenth)
+                self.concord_metrics.TBT.append(delta_time / delta_output_lenth)
         
         # only update last_schedule_time when new token is generated
         if delta_output_lenth > 0:          
             self.concord_metrics.last_schedule_time = cur_time
             
         self.concord_metrics.prompt_len = input_len
-        self.concord_metrics.output_len = output_len  
-            
-    # Note(wei): this function rely on the predict_output_length
-    def get_expected_num_tokens(self, time: float) -> Tuple[int, int]: 
-        prefill_deadline = self.prefilling_deadline / 1000
-        deadline = self.deadline / 1000
-        serve_time = max(time - self.arrival_time, 0)
-        expected_prompt_length = min(1, serve_time / prefill_deadline) * len(self.prompt_token_ids)
-        expected_output_length = min(1, (serve_time - prefill_deadline)/ deadline) * self.predict_output_length
-        return max(int(expected_prompt_length), 0), max(int(expected_output_length), 0)
+        self.concord_metrics.output_len = output_len
     
     # Note(wei): this function is used to calculate the service time of a request
     # and would be influenced by predict decode length (rely on deadline)  
@@ -931,78 +932,75 @@ class SequenceGroup:
     # But this function when requests in waiting queue seems to be zero
     def service_compute(
         self,
-        cur_time: float, 
-        time_between_token: float = 0.1,
-        consider_deadline: bool = False,
-        is_predict: bool = False
+        cur_time: float,
     ) -> float:
         # cur_timr: s, serve_time: ms, time_between_token: s
-        prefill_len = self.seqs[0].get_prefill_len()
-        decode_len = self.seqs[0].get_output_len()
-        serve_time = (cur_time - self.arrival_time) * 1000
-        desire_prefill_len, desire_decode_len = self.get_expected_num_tokens(cur_time)
-
-        # If miss TTFT, we will degrade the prefill ratio
-        # TODO 不应该是serve time, 而是TTFT
-        if self.concord_metrics.time_to_first_token is None:
-            if serve_time <= self.prefilling_deadline:
-                if consider_deadline:
-                    prefill_ratio = (serve_time / self.prefilling_deadline) ** 2
-                else:
-                    prefill_ratio = 1
-            else:
-                prefill_ratio = min(1, (self.prefilling_deadline / serve_time) ** 2)
-        else:
-            ttft = self.concord_metrics.time_to_first_token * 1000
-            prefill_ratio = min(1, (self.prefilling_deadline / ttft) ** 2)
-
-        if is_predict:
-            prefill_weight = RequestPhaseWeight.PREFILL.value * prefill_ratio * desire_prefill_len
-        else:
-            prefill_weight = RequestPhaseWeight.PREFILL.value * prefill_ratio * prefill_len
-
-        # For latency requests, we will degrade the decode ratio if not meet the real time deadline
-        if decode_len < desire_decode_len and self.request_type == RequestType.LATENCY:
-            decode_ratio = min(1, decode_len / desire_decode_len)
-            #print(decode_len, desire_decode_len, decode_ratio)
-        else:
-            decode_ratio = 1
-
-        # Note(Wei): only used in slo policy
-        deadline_penalty = 1
-        if consider_deadline and self.predict_output_length > 0:
-            if decode_len == 0:
-                time_between_token *= 1000
-                predict_finish_time = serve_time + self.predict_output_length * time_between_token
-            else:
-                predict_finish_time = serve_time / (decode_len / self.predict_output_length)
-            deadline_penalty = min(1, self.deadline / predict_finish_time)
-            #print(predict_finish_time, self.deadline, self.predict_output_length, time_between_token, serve_time)
-
-        decode_len = 0.1 if decode_len == 0 else decode_len
-
-        decode_weight = RequestPhaseWeight.DECODE.value * decode_ratio * decode_len
+        prefill_len = self.first_seq.get_prefill_len()
+        decode_len = self.first_seq.get_output_len()
         
-        #print(self.request_id, prefill_weight, decode_weight, deadline_penalty)
+        prefill_weight = 1
+        decode_weight = 2
+    
+        generated_prefill_tokens = self.concord_metrics.new_prefill_tokens
+        generated_decode_tokens = self.concord_metrics.new_decode_tokens
 
-        return (prefill_weight + decode_weight) * deadline_penalty
+        if self.concord_metrics.TTFT is not None:
+            req_TTFT = self.concord_metrics.TTFT
+            if req_TTFT > self.TTFT_constraint:
+                req_TTFT = self.TTFT_constraint
+            desire_decode_len = (cur_time - req_TTFT - self.arrival_time) / self.TBT_constraint
+        else:
+          desire_decode_len = 0
+          
+        # print(f"collection id: {self.collection_id} {generated_prefill_tokens} {generated_decode_tokens} | "
+        #       f"prefill_len: {prefill_len} decode_len: {decode_len} | "
+        #       f"input_len: {self.concord_metrics.prompt_len} output_len: {self.concord_metrics.output_len} | "
+        #       f"desire_decode_len: {desire_decode_len} service_gain: {self.concord_metrics.service_gain}")
 
-
-    # Note(wei): this function is used to calculate the delta service for a request if waiitng in slo policy
-    # and should return non-positive value, we measure the deadline penalty here
-    def delta_service_compute(
-        self,
-        cur_time: float, 
-        delta_time: float,
-        time_between_token: float = 0.1
-    ) -> float:
-        cur_service = self.service_compute(cur_time, time_between_token, True)
-        next_waiting_service = self.service_compute(cur_time + delta_time, time_between_token, True, True)
-
-        # logger.info(f"cur_service: {cur_service}, next_waiting_service: {next_waiting_service}")
-        if self.seqs[0].status == SequenceStatus.RUNNING:
-            return cur_service - next_waiting_service
-        return next_waiting_service - cur_service
+        # 计算预填充和解码的权重
+        # latency-sensitive requests
+        if self.request_type == RequestType.LATENCY:
+            service = 0
+            # in prefilling stage
+            # the service gain is computed after TTFT is set
+            if self.concord_metrics.service_gain == 0 and self.concord_metrics.TTFT is not None:
+                prefill_ratio = min(1, (self.TTFT_constraint / self.concord_metrics.TTFT)**2)
+                service += prefill_ratio * prefill_len * prefill_weight
+            # in decoding stage
+            # the service gain is computed for each iteration
+            if generated_decode_tokens != 0:
+                if desire_decode_len == 0:
+                    service += 1 * decode_weight * generated_decode_tokens
+                else:
+                    decode_ratio = min(1, (decode_len / desire_decode_len)**2)
+                    service += decode_ratio * decode_weight * generated_decode_tokens
+            return service
+      
+        # throughput-sensitive requests
+        elif self.request_type == RequestType.THROUGHPUT or self.request_type == RequestType.COLLECTIVE:
+            # in prefilling stage
+            # no TTFT constraint
+            if generated_prefill_tokens != 0:
+                service = 0
+            # in decoding stage
+            # the service gain is computed for whole decoding stage, with a deadline penalty
+            elif generated_decode_tokens != 0:
+                if self.concord_metrics.TTLT is None:
+                    service = 0
+                else:
+                    utility = prefill_len * prefill_weight + decode_len * decode_weight
+                    if self.request_type == RequestType.COLLECTIVE:
+                        deadline_penalty = 1
+                    else:
+                        deadline_penalty = min(1, (self.deadline / self.concord_metrics.TTLT)**2)
+                    service = utility * deadline_penalty
+            else:
+                service = 0
+            
+            return service
+    
+        else:
+            raise ValueError("Unknown request type")
 
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0

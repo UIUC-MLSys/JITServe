@@ -42,6 +42,7 @@ class RequestInfo:
         client_id: int,  # ID of the client making the request
         collection_id: int,  # ID of the collection the request belongs to
         deadline: int,  # Deadline for the request to be processed
+        input_len: int,  # The input length for the request
         output_len: int,  # The expected output length for the request
         prediction_task: asyncio.Task = None,  # Task for prediction
     ):
@@ -51,6 +52,7 @@ class RequestInfo:
         self.collection_id = collection_id
         self.deadline = deadline
         self.output_len = output_len
+        self.input_len = input_len
         # Set the request weight: HIGH for LATENCY requests, LOW for others
         self.request_weight = RequestTypeWeight.HIGH if \
                     request_type == RequestType.LATENCY else RequestTypeWeight.LOW
@@ -75,6 +77,7 @@ class RequestInfo:
         collection_id = json_obj["collection_id"]
         deadline = json_obj["deadline"]
         output_len = json_obj["output_len"]
+        input_len = json_obj["prompt_len"]
         
         # Return a new instance of RequestInfo with the extracted values
-        return cls(request_type, client_id, collection_id, deadline, output_len)
+        return cls(request_type, client_id, collection_id, deadline, input_len, output_len)

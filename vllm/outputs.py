@@ -5,6 +5,7 @@ from typing import Sequence as GenericSequence
 from typing import Union
 
 from vllm.lora.request import LoRARequest
+from vllm.request_info import RequestType
 from vllm.sampling_params import RequestOutputKind
 from vllm.sequence import (PromptLogprobs, RequestMetrics, SampleLogprobs,
                            SequenceGroup, SequenceGroupBase, SequenceStatus)
@@ -245,14 +246,16 @@ class RequestOutput:
         finished_time = time.time() if finished else None
         seq_group.set_finished_time(finished_time)
         
-        # if seq_group.time_to_first_token is None:
-        #     seq_group.time_to_first_token = time.perf_counter()
-
+        # if seq_group.concord_metrics.TTFT is None:
+        #     seq_group.concord_metrics.TTFT = time.time() - seq_group.concord_metrics.arrival_time
+        if finished:
+            seq_group.concord_metrics.TTLT = time.time() - seq_group.concord_metrics.arrival_time
+            seq_group.concord_metrics.service_gain += seq_group.service_compute(time.time())
         init_args = (seq_group.request_id, prompt, prompt_token_ids,
                      prompt_logprobs, outputs, finished, seq_group.metrics,
                      seq_group.lora_request, encoder_prompt,
-                     encoder_prompt_token_ids, seq_group.concord_metrics.time_to_first_token,
-                     seq_group.concord_metrics.time_between_token, seq_group.concord_metrics.service_gain)
+                     encoder_prompt_token_ids, seq_group.concord_metrics.TTFT,
+                     seq_group.concord_metrics.TBT, seq_group.concord_metrics.service_gain)
 
         if use_cache:
             request_output = seq_group.cached_request_output
