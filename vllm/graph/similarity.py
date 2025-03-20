@@ -55,6 +55,8 @@ class ToTStructure:
         self.is_finished = False
         
     def update(self) -> None:
+        if (self.stage_finished) >= len(self.request_per_stage):
+            return
         if len(self.current_stage_length) == self.request_per_stage[self.stage_finished]:
             self.stage_finished += 1
             stage_input_length = sum([length[0] for length in self.current_stage_length])

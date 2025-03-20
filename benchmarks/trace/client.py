@@ -17,11 +17,13 @@ class RequestInput:
     def __init__(
         self, 
         request: RequestFormat,
+        slo_constraint: Tuple[float, float, float],
         sampling_params: SamplingParams,
         client_id: int,
         api_url: str
         ):
         self.request = request
+        self.slo_constraint = slo_constraint
         self.sampling_params = sampling_params
         self.client_id = client_id
         self.api_url = api_url
@@ -393,6 +395,7 @@ async def send_request(
 
 async def client_simulator(
     input_requests: List[RequestFormat], 
+    slo_constraint: Tuple[float, float, float],
     poisson_lambda: float,
     burst: bool,
     sampling_params: SamplingParams,     
@@ -411,7 +414,7 @@ async def client_simulator(
     if len(input_requests) == 0:
         return []
     async for request in get_request(input_requests, poisson_lambda, burst):      
-        request_info = RequestInput(request, sampling_params, client_id, api_url)
+        request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url)
         deadline = client_deadline
 
         if request.request_type == RequestType.Collective:

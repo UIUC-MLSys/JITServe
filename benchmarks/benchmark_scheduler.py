@@ -321,6 +321,7 @@ async def benchmark(
     
     test_input = RequestInput(
         request=test_request,
+        slo_constraint=slo_constraint,
         sampling_params=sampling_params,
         client_id=0,
         api_url=api_url,
@@ -366,11 +367,12 @@ async def benchmark(
             asyncio.create_task(
                 client_simulator(
                     input_requests=input_requests,
+                    slo_constraint=slo_constraint,
                     poisson_lambda=poisson_lambda,
                     burst=burst,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=6000,
+                    client_deadline=10000,
                     api_url=api_url,
                     tot_structure=tot_structure,
                     pbar=pbar,

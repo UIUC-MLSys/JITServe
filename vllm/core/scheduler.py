@@ -1541,31 +1541,16 @@ class Scheduler:
         prefills = SchedulerPrefillOutputs.create_empty()
         running_scheduled = SchedulerRunningOutputs.create_empty()
         swapped_in = SchedulerSwappedInOutputs.create_empty()
-        preemption_count = 0
-        preemption_result = None
-        preemption_swapped_out_queue = []
-        preemption_blocks_to_swap_out = []
-        
-        if self.policy is not None:
-            can_preempt = self.policy.update_schedule_count()
-            if can_preempt:
-                for seq_group in self.running:
-                    budget.add_num_seqs(seq_group.request_id,
-                                        seq_group.get_max_num_running_seqs())
-                    budget.add_num_batched_tokens(seq_group.request_id,
-                                        self._get_num_new_tokens(seq_group, SequenceStatus.RUNNING, True, budget))
-                preemption_result = self._schedule_concord_preemption(budget, enable_chunking=False)
-                prefills = preemption_result.prefill_result
-                swapped_in = preemption_result.swapped_in_result
-                preemption_count = preemption_result.force_preemption_count
-                preemption_swapped_out_queue = preemption_result.running_swapped_out_queue
-                preemption_blocks_to_swap_out = preemption_result.blocks_to_swap_out
 
         # If any requests are swapped, prioritized swapped requests.
-        if not self.swapped and preemption_result is None:
+        if not self.swapped:
             prefills = self._schedule_prefills(budget,
                                                curr_loras,
                                                enable_chunking=False)
+
+        if len(prefills.seq_groups
+               ) == 0 and self.scheduler_config.policy == "priority":
+            self._schedule_priority_preemption(budget)
 
         # Don't schedule decodes if prefills are scheduled.
         # NOTE: If `_schedule_prefills` doesn't enable chunking, self.running
@@ -1578,7 +1563,7 @@ class Scheduler:
             # If any sequence group is preempted, do not swap in any sequence
             # group. because it means there's no slot for new running requests.
             if len(running_scheduled.preempted) + len(
-                    running_scheduled.swapped_out) == 0 and preemption_result is None:
+                    running_scheduled.swapped_out) == 0:
                 swapped_in = self._schedule_swapped(budget, curr_loras)
 
         assert (budget.num_batched_tokens <=
@@ -1599,15 +1584,8 @@ class Scheduler:
 
         # Update swapped requests.
         self.swapped.extend(running_scheduled.swapped_out)
-        self.swapped.extend(preemption_swapped_out_queue)
-        
-        # Sort the swapped queue and waiting queue based on the priority
-        if preemption_result is not None:
-            self.waiting = deque(sorted(self.waiting, key=self.policy.get_priority))
-            self.swapped = deque(sorted(self.swapped, key=self.policy.get_priority))
-        
         preempted = (len(running_scheduled.preempted) +
-                     len(running_scheduled.swapped_out) + len(preemption_swapped_out_queue))
+                     len(running_scheduled.swapped_out))
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
@@ -1634,7 +1612,7 @@ class Scheduler:
             num_prefill_groups=num_prefill_groups,
             num_batched_tokens=budget.num_batched_tokens,
             blocks_to_swap_in=swapped_in.blocks_to_swap_in,
-            blocks_to_swap_out=running_scheduled.blocks_to_swap_out + preemption_blocks_to_swap_out,
+            blocks_to_swap_out=running_scheduled.blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             ignored_seq_groups=ignored_seq_groups,
             num_lookahead_slots=running_scheduled.num_lookahead_slots,

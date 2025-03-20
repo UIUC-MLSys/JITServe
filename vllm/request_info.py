@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum, IntEnum
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 # Enum class to define different types of requests
 class RequestType(IntEnum):
@@ -39,6 +39,7 @@ class RequestInfo:
     def __init__(
         self, 
         request_type: RequestType,  # Type of the request (LATENCY, THROUGHPUT, or COLLECTIVE)
+        slo_constraint: Tuple[float, float, float],  # SLO constraint for the request (ttft, tbt, ttlt)
         client_id: int,  # ID of the client making the request
         collection_id: int,  # ID of the collection the request belongs to
         deadline: int,  # Deadline for the request to be processed
@@ -48,6 +49,7 @@ class RequestInfo:
     ):
         # Initialize the attributes with the provided values
         self.request_type = request_type
+        self.slo_constraint = slo_constraint
         self.client_id = client_id
         self.collection_id = collection_id
         self.deadline = deadline
@@ -73,6 +75,7 @@ class RequestInfo:
         '''
         # Extract values from the JSON object
         request_type = RequestType(json_obj["request_type"])  # Convert to RequestType enum
+        slo_constraint = json_obj["slo_constraint"]
         client_id = json_obj["client_id"]
         collection_id = json_obj["collection_id"]
         deadline = json_obj["deadline"]
@@ -80,4 +83,4 @@ class RequestInfo:
         input_len = json_obj["prompt_len"]
         
         # Return a new instance of RequestInfo with the extracted values
-        return cls(request_type, client_id, collection_id, deadline, input_len, output_len)
+        return cls(request_type, slo_constraint, client_id, collection_id, deadline, input_len, output_len)

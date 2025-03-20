@@ -181,7 +181,14 @@ class ConcordPolicy(BasePolicy):
         logger.info("SLO policy is used")
         
     def allocation_control(self, seq_group: SequenceGroup) -> float:
-        pass
+        max_remain_time = 0
+        for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
+            peer_predict_output_len = peer_seq_group.predict_output_length
+            peer_decode_len = peer_seq_group.seqs[0].get_decode_len()
+            peer_remain_time = peer_seq_group.TBT_constraint * (peer_predict_output_len - peer_decode_len)
+            max_remain_time = max(max_remain_time, peer_remain_time)
+            
+        return max_remain_time
     
     def get_priority(
         self, 
@@ -200,41 +207,39 @@ class ConcordPolicy(BasePolicy):
         seq_group.predict_output_length = seq_group.request_info.output_len
         
         cur_time = time.time()
-
-        prefill_len = seq_group.seqs[0].get_prefill_len()
         decode_len = seq_group.seqs[0].get_decode_len()
         input_len = seq_group.seqs[0].get_prompt_len()
         predict_output_len = seq_group.predict_output_length
+        
+        remain_time = seq_group.TBT_constraint * (predict_output_len - decode_len)
+        if seq_group.request_type == RequestType.COLLECTIVE:
+            remain_time = self.allocation_control(seq_group)
+        remain_time = max(remain_time, 0.001)
 
         if seq_group.request_type == RequestType.LATENCY:
             if seq_group.concord_metrics.TTFT is not None and seq_group.concord_metrics.service_gain > 0:
                 predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
                 decode_gain = (predict_output_len - decode_len) * 2
                 priority = seq_group.concord_metrics.service_gain + decode_gain * min(1, (seq_group.deadline / predict_finish_time)**2)
-                remain_time = seq_group.TBT_constraint * (predict_output_len - decode_len)
-                priority /= max(remain_time, 0.001)
             else:
                 predict_finish_prefill_time = cur_time + seq_group.TBT_constraint - seq_group.arrival_time
                 predict_finish_decode_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
                 prefill_gain = input_len * min(1, (seq_group.TTFT_constraint / predict_finish_prefill_time)**2)
                 decode_gain = predict_output_len * min(1, (seq_group.deadline / predict_finish_decode_time)**2) * 2
                 priority = prefill_gain + decode_gain
-                remain_time = seq_group.TBT_constraint * (predict_output_len - decode_len)
-                priority /= max(remain_time, 0.001)
         elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
             # priority = (seq_group.deadline - seq_group.TBT_constraint * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
             predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
             total_gain = input_len * 1 + predict_output_len * 2
             priority = total_gain * min(1, (seq_group.deadline / predict_finish_time)**2)
-            remain_time = seq_group.TBT_constraint * (predict_output_len - decode_len)
-            priority /= max(remain_time, 0.001)
         # if seq_group.request_type == RequestType.LATENCY:
         #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
         # elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
         #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
-        priority = -priority
+        priority = -priority / remain_time
         
         concord_priority = (priority, predict_output_len - decode_len)
         self.seq_group_slo_dict[seq_group.request_id] = concord_priority
         seq_group.slo_priority = concord_priority
+        
         return concord_priority

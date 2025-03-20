@@ -198,6 +198,7 @@ async def init_app(
     global use_graph_matching
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
+    engine_args.max_model_len = 32768
 
     if not args.disable_prediction:
         if engine_args.scheduling_policy in ['sjf', 'concord']:
@@ -239,7 +240,8 @@ async def run_server(args: Namespace,
     logger.info("vLLM API server version %s", VLLM_VERSION)
     logger.info("args: %s", args)
 
-    await init_prediction_model(args)
+    if args.disable_prediction is False:
+        await init_prediction_model(args)
     app = await init_app(args, llm_engine)
     assert engine is not None
 

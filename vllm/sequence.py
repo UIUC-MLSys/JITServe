@@ -751,8 +751,8 @@ class SequenceGroup:
         self.slo_priority = 0
         self.collection_id = request_info.collection_id
         self.deadline = request_info.deadline / 1000
-        self.TTFT_constraint = 1
-        self.TBT_constraint = 0.1
+        self.TTFT_constraint = request_info.slo_constraint[0]
+        self.TBT_constraint = request_info.slo_constraint[1]
         self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
         self.request_weight = request_info.request_weight
