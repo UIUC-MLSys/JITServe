@@ -97,6 +97,7 @@ async def generate(request: Request) -> Response:
     
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id
+    request_info["slo_constraint"] = tuple(request_dict["slo_constraint"])
     request_info = RequestInfo.from_json(request_info)
     request_id = random_uuid()
     

@@ -20,6 +20,7 @@ class BasePolicy(ABC):
     def __init__(
         self,
         schedule_interval: int,
+        penalty_factor: int = 1,
         interval_update_ratio: float = 0.5,
     ) -> None:
         # Dictionary to store sequence groups by collection_id
@@ -34,6 +35,7 @@ class BasePolicy(ABC):
         
         self.last_schedule_time = time.time()
         self.interval_time = -1
+        self.penalty_factor = penalty_factor
         
     def update_schedule_count(self) -> bool:
         '''
@@ -111,8 +113,9 @@ class FCFSPolicy(BasePolicy):
     def __init__(
         self,
         schedule_interval: int = 20,
+        penalty_factor: int = 1
     ) -> None:
-        super().__init__(schedule_interval)
+        super().__init__(schedule_interval, penalty_factor)
         logger.info("FCFS policy is used")
     
     def get_priority(self, seq_group: SequenceGroup) -> float:
@@ -132,8 +135,9 @@ class SJFPolicy(BasePolicy):
     def __init__(
         self,
         schedule_interval: int = 20,
+        penalty_factor: int = 1
     ) -> None:
-        super().__init__(schedule_interval)
+        super().__init__(schedule_interval, penalty_factor)
         logger.info("SJF policy is used")
 
     def get_priority(self, seq_group: SequenceGroup) -> float:
@@ -152,9 +156,10 @@ class SRTFPolicy(BasePolicy):
     '''
     def __init__(
         self,
-        schedule_interval: int = 20,    
+        schedule_interval: int = 20,
+        penalty_factor: int = 1    
     ) -> None:
-        super().__init__(schedule_interval)
+        super().__init__(schedule_interval, penalty_factor)
         logger.info("SRTF policy is used")
     
     def get_priority(self, seq_group: SequenceGroup) -> float:
@@ -173,8 +178,9 @@ class ConcordPolicy(BasePolicy):
     def __init__(
         self,
         schedule_interval: int = 20,
+        penalty_factor: int = 1
     ) -> None:
-        super().__init__(schedule_interval)
+        super().__init__(schedule_interval, penalty_factor)
         self.swap_in_time = 800
         self.swap_out_time = 800
         self.max_num_preemption_time = 20
@@ -220,18 +226,18 @@ class ConcordPolicy(BasePolicy):
             if seq_group.concord_metrics.TTFT is not None and seq_group.concord_metrics.service_gain > 0:
                 predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
                 decode_gain = (predict_output_len - decode_len) * 2
-                priority = seq_group.concord_metrics.service_gain + decode_gain * min(1, (seq_group.deadline / predict_finish_time)**2)
+                priority = seq_group.concord_metrics.service_gain + decode_gain * min(1, (seq_group.deadline / predict_finish_time)**self.penalty_factor)
             else:
                 predict_finish_prefill_time = cur_time + seq_group.TBT_constraint - seq_group.arrival_time
                 predict_finish_decode_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-                prefill_gain = input_len * min(1, (seq_group.TTFT_constraint / predict_finish_prefill_time)**2)
-                decode_gain = predict_output_len * min(1, (seq_group.deadline / predict_finish_decode_time)**2) * 2
+                prefill_gain = input_len * min(1, (seq_group.TTFT_constraint / predict_finish_prefill_time)**self.penalty_factor)
+                decode_gain = predict_output_len * min(1, (seq_group.deadline / predict_finish_decode_time)**self.penalty_factor) * 2
                 priority = prefill_gain + decode_gain
         elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
             # priority = (seq_group.deadline - seq_group.TBT_constraint * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
             predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
             total_gain = input_len * 1 + predict_output_len * 2
-            priority = total_gain * min(1, (seq_group.deadline / predict_finish_time)**2)
+            priority = total_gain * min(1, (seq_group.deadline / predict_finish_time)**self.penalty_factor)
         # if seq_group.request_type == RequestType.LATENCY:
         #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
         # elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:

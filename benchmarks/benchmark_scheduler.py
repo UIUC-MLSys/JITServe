@@ -297,6 +297,7 @@ async def benchmark(
     max_concurrency: Optional[int],
     max_output_len: int,
     slo_constraint: Tuple[float, float, float], # (ttft, tbt, ttlt)
+    penalty_factor: int,
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
 ):
     trace_len = len(trace)
@@ -368,6 +369,7 @@ async def benchmark(
                 client_simulator(
                     input_requests=input_requests,
                     slo_constraint=slo_constraint,
+                    penalty_factor=penalty_factor,
                     poisson_lambda=poisson_lambda,
                     burst=burst,
                     sampling_params=sampling_params,
@@ -439,6 +441,7 @@ def main(args: argparse.Namespace):
         "policy": args.policy,
         "dataset": args.dataset,
         "slo_constraint": args.slo_constraint,
+        "penalty_factor": args.penalty_factor,
         "max_output_len": args.max_output_len,
         "tot_thoughts": args.tot_thoughts,
         "tot_rounds": args.tot_rounds,
@@ -468,6 +471,7 @@ def main(args: argparse.Namespace):
             max_concurrency=args.max_concurrency,
             max_output_len=args.max_output_len,
             slo_constraint=tuple(map(float, args.slo_constraint.split(","))),
+            penalty_factor=args.penalty_factor,
             tot_structure=(args.tot_thoughts, args.tot_rounds),
         ))
 
@@ -530,6 +534,12 @@ if __name__ == '__main__':
         type=str,
         default="1000,1000,2000",
         help="SLO constraint for the benchmark. "
+    )
+    parser.add_argument(
+        "--penalty-factor",
+        type=int,
+        default=1,
+        help="Penalty factor for the benchmark. "
     )
     parser.add_argument(
         "--user-request-rate",

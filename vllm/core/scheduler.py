@@ -458,7 +458,7 @@ class Scheduler:
                                        self.scheduler_config.max_num_seqs, 
                                        self.scheduler_config.max_model_len)
         else:
-            self.policy: BasePolicy = BasePolicy._get_policy_cls(scheduler_config.policy)()
+            self.policy: BasePolicy = BasePolicy._get_policy_cls(scheduler_config.policy)(penalty_factor=scheduler_config.penalty_factor)
             self.waiting = deque()
         # Sequence groups in the RUNNING state.
         # Contain decode requests.
@@ -2174,7 +2174,7 @@ class Scheduler:
     def _update_seq_group_metrics(self) -> None:
         cur_time = time.time()
         for running_seq_group in self.running:
-            running_seq_group.update_concord_metrics(cur_time)
+            running_seq_group.update_concord_metrics(cur_time, self.scheduler_config.penalty_factor)
 
     def free_finished_seq_groups(self) -> None:
         remaining: Deque[SequenceGroup] = deque()

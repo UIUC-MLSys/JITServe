@@ -896,7 +896,7 @@ class SequenceGroup:
         if not seq.is_finished():
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
                 
-    def update_concord_metrics(self, cur_time: float) -> None:
+    def update_concord_metrics(self, cur_time: float, penalty_factor: int) -> None:
         # cur_time: s
         seq = self.seqs[0]
         
@@ -905,7 +905,7 @@ class SequenceGroup:
         
         if output_len >= 1 and self.concord_metrics.TTFT is None:
             self.concord_metrics.TTFT = cur_time - self.concord_metrics.arrival_time
-            self.concord_metrics.service_gain += self.service_compute(cur_time)
+            self.concord_metrics.service_gain += self.service_compute(cur_time, penalty_factor)
                 
         delta_input_length = input_len - self.concord_metrics.prompt_len 
         delta_output_lenth = output_len - self.concord_metrics.output_len
@@ -913,7 +913,7 @@ class SequenceGroup:
         self.concord_metrics.new_decode_tokens = delta_output_lenth
         # compute service gain
 
-        self.concord_metrics.service_gain += self.service_compute(time.time())
+        self.concord_metrics.service_gain += self.service_compute(time.time(), penalty_factor)
         if self.concord_metrics.last_schedule_time is not None and \
             delta_output_lenth > 0:
                 delta_time = cur_time - self.concord_metrics.last_schedule_time
@@ -933,6 +933,7 @@ class SequenceGroup:
     def service_compute(
         self,
         cur_time: float,
+        penalty_factor: int = 1,
     ) -> float:
         # cur_timr: s, serve_time: ms, time_between_token: s
         prefill_len = self.first_seq.get_prefill_len()
@@ -964,7 +965,7 @@ class SequenceGroup:
             # in prefilling stage
             # the service gain is computed after TTFT is set
             if self.concord_metrics.service_gain == 0 and self.concord_metrics.TTFT is not None:
-                prefill_ratio = min(1, (self.TTFT_constraint / self.concord_metrics.TTFT)**2)
+                prefill_ratio = min(1, (self.TTFT_constraint / self.concord_metrics.TTFT)**penalty_factor)
                 service += prefill_ratio * prefill_len * prefill_weight
             # in decoding stage
             # the service gain is computed for each iteration
@@ -972,7 +973,7 @@ class SequenceGroup:
                 if desire_decode_len == 0:
                     service += 1 * decode_weight * generated_decode_tokens
                 else:
-                    decode_ratio = min(1, (decode_len / desire_decode_len)**2)
+                    decode_ratio = min(1, (decode_len / desire_decode_len)**penalty_factor)
                     service += decode_ratio * decode_weight * generated_decode_tokens
             return service
       
@@ -992,7 +993,7 @@ class SequenceGroup:
                     if self.request_type == RequestType.COLLECTIVE:
                         deadline_penalty = 1
                     else:
-                        deadline_penalty = min(1, (self.deadline / self.concord_metrics.TTLT)**2)
+                        deadline_penalty = min(1, (self.deadline / self.concord_metrics.TTLT)**penalty_factor)
                     service = utility * deadline_penalty
             else:
                 service = 0

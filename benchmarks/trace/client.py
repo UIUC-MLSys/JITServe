@@ -100,6 +100,7 @@ async def get_request(
 async def send_collective_request(
     request_info: RequestInput, 
     tot_structure: Tuple[int, int],
+    penalty_factor: int,
     client_deadline: float = 20,
     pbar: Optional[tqdm] = None,
     is_stream: bool = True,
@@ -120,6 +121,7 @@ async def send_collective_request(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
             "request_info": request_info.request.to_dict(),
+            "slo_constraint": request_info.slo_constraint,
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
             "stream": is_stream,
@@ -293,7 +295,7 @@ async def send_collective_request(
             ed = time.perf_counter()
             task_latency = ed - st
             if task_latency > request_info.request.deadline / 1000:
-                slo_violation_penalty = min(1, ((request_info.request.deadline / 1000) / task_latency)**2)
+                slo_violation_penalty = min(1, ((request_info.request.deadline / 1000) / task_latency)**penalty_factor)
                 for output in output_list:
                     output.finish_before_ddl = False
                     output.request_service_gain *= slo_violation_penalty
@@ -333,6 +335,7 @@ async def send_request(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         payload = {
             "request_info": request_info.request.to_dict(),
+            "slo_constraint": request_info.slo_constraint,
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
             "stream": is_stream
@@ -396,6 +399,7 @@ async def send_request(
 async def client_simulator(
     input_requests: List[RequestFormat], 
     slo_constraint: Tuple[float, float, float],
+    penalty_factor: int,
     poisson_lambda: float,
     burst: bool,
     sampling_params: SamplingParams,     
@@ -418,7 +422,7 @@ async def client_simulator(
         deadline = client_deadline
 
         if request.request_type == RequestType.Collective:
-            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, deadline, pbar)))
+            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, deadline, pbar)))
         else:
             tasks.append(asyncio.create_task(send_request(request_info, deadline, pbar)))
         

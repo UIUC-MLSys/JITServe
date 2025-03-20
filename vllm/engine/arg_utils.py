@@ -183,6 +183,7 @@ class EngineArgs:
     override_neuron_config: Optional[Dict[str, Any]] = None
     mm_processor_kwargs: Optional[Dict[str, Any]] = None
     scheduling_policy: Literal["fcfs", "priority", "vtc"] = "fcfs"
+    penalty_factor :int = 1
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -849,6 +850,13 @@ class EngineArgs:
             'or "priority" (requests are handled based on given '
             'priority (lower value means earlier handling) and time of '
             'arrival deciding any ties).')
+        
+        parser.add_argument(
+            '--penalty-factor',
+            type=int,
+            default=1,
+            help="The penalty factor to be applied to the service gain and concord priority"
+        )
 
         return parser
 
@@ -1069,6 +1077,7 @@ class EngineArgs:
             send_delta_data=(envs.VLLM_USE_RAY_SPMD_WORKER
                              and parallel_config.use_ray),
             policy=self.scheduling_policy,
+            penalty_factor=self.penalty_factor,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,
