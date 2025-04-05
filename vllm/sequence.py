@@ -145,7 +145,17 @@ class RequestConcordMetrics:
         # should set to None when in swapped/waiting queue
         self.last_schedule_time: float = None
         self.service_gain: float = 0
-
+        
+    def reset(self) -> None:
+        self.prompt_len = 0
+        self.output_len = 0
+        self.TTFT = None
+        self.TBT = []
+        self.TTLT = None
+        self.new_prefill_tokens = 0
+        self.new_decode_tokens = 0
+        self.last_schedule_time = None
+        self.service_gain = 0
 
 class SequenceDataDelta(
         msgspec.Struct,

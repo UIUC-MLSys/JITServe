@@ -199,7 +199,7 @@ async def init_app(
     global use_graph_matching
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
-    engine_args.max_model_len = 32768
+    engine_args.max_model_len = 8192 #32768
 
     if not args.disable_prediction:
         if engine_args.scheduling_policy in ['sjf', 'concord']:

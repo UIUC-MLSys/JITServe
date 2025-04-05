@@ -86,7 +86,19 @@ class VTCReqQueue:
                       if (len(self.user_req_list[k]) > 0 and k != req.client_id)]
             if len(cnts) > 0:
                 self.served[req.client_id] = max(self.served[req.client_id], min(cnts))
-
+                
+    def remove(self, req: SequenceGroup):
+        if req.client_id in self.user_req_list:
+            self.user_req_list[req.client_id].remove(req)
+            if len(self.user_req_list[req.client_id]) == 0:
+                del self.user_req_list[req.client_id]
+                del self.served[req.client_id]
+        if req in self.waiting_req_list:
+            self.waiting_req_list.remove(req)
+            
+    def renew(self, req: SequenceGroup):
+        self.remove(req)
+        self.append(req)
 
     def _init_cache_list(self, current_batch:Deque[SequenceGroup]):
         self.cache_len_list = []
@@ -137,8 +149,12 @@ class VTCReqQueue:
         can_run_list = deque()
         abort_list = []
         new_batch_total_tokens = 0
+        new_batch_seqs = 0
         aborted_count = 0
         active_served = {k: v for k, v in self.served.items()}
+        for seq in current_batch:
+            new_batch_total_tokens += seq.first_seq.get_prompt_len() if seq.is_prefill() else 2
+            new_batch_seqs += 1
         while True:
             if len(active_served) == 0:
                 break
@@ -157,7 +173,8 @@ class VTCReqQueue:
                     self.user_req_list[client_id].popleft()
                     continue
                 if (self._can_add_new_req(req) and
-                    new_batch_total_tokens + req.first_seq.get_prompt_len() <= self.max_num_batched_tokens):
+                    new_batch_total_tokens + req.first_seq.get_prompt_len() <= self.max_num_batched_tokens and
+                    new_batch_seqs + 1 <= self.max_num_seqs):
                     can_run_list.append(req)
                     new_batch_total_tokens += req.first_seq.get_prompt_len()
                     self.user_req_list[client_id].popleft()
@@ -176,9 +193,8 @@ class VTCReqQueue:
             #                          if req not in can_run_list]
             return can_run_list, abort_list
         else:
-            return None, []
+            return None, abort_list
 
-    
     def update_counter(self, current_batch: Deque[SequenceGroup]):
         for req in current_batch:
             self.served[req.client_id] += 1 * self.output_price

@@ -282,6 +282,7 @@ def print_benchmark_results(metrics: BenchmarkMetrics, time_window_seconds: floa
 async def benchmark(
     api_url: str,
     base_url: str,
+    model: str,
     tokenizer: PreTrainedTokenizerBase,
     trace: List[RequestFormat],
     logprobs: Optional[int],
@@ -329,10 +330,11 @@ async def benchmark(
     )
     
     if test_input.request.request_type == RequestType.Collective:
-        test_output: List[RequestOutput] = await send_collective_request(request_info=test_input, 
+        test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
+                                                                         model_name=model, 
                                                                          tot_structure=tot_structure)
     else:
-        test_output: List[RequestOutput] = await send_request(request_info=test_input)
+        test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model)
     if not test_output[0].success:
         raise ValueError(
             "Initial test run failed - Please make sure benchmark arguments "
@@ -370,11 +372,12 @@ async def benchmark(
                     input_requests=input_requests,
                     slo_constraint=slo_constraint,
                     penalty_factor=penalty_factor,
+                    model_name=model,
                     poisson_lambda=poisson_lambda,
                     burst=burst,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=10000,
+                    client_deadline=2500,
                     api_url=api_url,
                     tot_structure=tot_structure,
                     pbar=pbar,
@@ -454,6 +457,7 @@ def main(args: argparse.Namespace):
         benchmark(
             api_url=api_url,
             base_url=base_url,
+            model=model_id,
             tokenizer=tokenizer,
             trace=trace,
             logprobs=args.logprobs,
@@ -496,7 +500,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="benchmarks/dataset/trace/alpaca.json",
+        default="benchmarks/dataset/trace/lmsys.json",
         help="Path to the trace file.",
     )
     parser.add_argument(
@@ -686,7 +690,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--metric-percentiles",
         type=str,
-        default="25,50,75,99",
+        default="1,25,50,75,95,99",
         help="Comma-seperated list of percentiles for selected metrics. "
         "To report 25-th, 50-th, and 75-th percentiles, use \"25,50,75\". "
         "Default value is \"99\". "

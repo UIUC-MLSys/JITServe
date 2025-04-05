@@ -51,7 +51,7 @@ def remove_prefix(text: str, prefix: str) -> str:
     return text
 
 
-def prompt_format(prompt: str) -> str:
+def llama_prompt_format(prompt: str) -> str:
     return f"""
     <|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
@@ -60,6 +60,23 @@ def prompt_format(prompt: str) -> str:
     {prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
     """
 
+def qwen_prompt_format(prompt: str) -> str:
+    return f"""
+    <|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n
+    <|im_start|>user
+    {prompt}<|im_end|>\n\n<|im_start|>assistant\n
+    """
+
+def get_prompt_format_func(model_name: str) -> callable:
+    '''
+    Get the prompt format function based on the model name.
+    '''
+    if 'llama' in model_name.lower():
+        return llama_prompt_format
+    elif 'qwen' in model_name.lower():
+        return qwen_prompt_format
+    else:
+        raise ValueError(f"Unsupported model name: {model_name}")
 
 def parse_output(output: str, input_length: int) -> str:
     '''
@@ -101,6 +118,7 @@ async def send_collective_request(
     request_info: RequestInput, 
     tot_structure: Tuple[int, int],
     penalty_factor: int,
+    model_name: str,
     client_deadline: float = 20,
     pbar: Optional[tqdm] = None,
     is_stream: bool = True,
@@ -110,6 +128,7 @@ async def send_collective_request(
     '''
     api_url = request_info.api_url
     timeout = aiohttp.ClientTimeout(total=client_deadline)
+    prompt_format = get_prompt_format_func(model_name)
     output_list: List[RequestOutput] = []
     
     # ToT parameters
@@ -136,6 +155,7 @@ async def send_collective_request(
             new_payload['request_info']['prompt'] = input_prompt
             new_payload["sampling_params"]["n"] = 1
             new_payload["sampling_params"]["best_of"] = 1
+            new_payload["sampling_params"]["max_tokens"] = 256
             
             output = RequestOutput()
             output.request_input = input_prompt
@@ -207,6 +227,7 @@ async def send_collective_request(
             new_payload["request_info"]["prompt"] = value_prompt
             new_payload["sampling_params"]["n"] = 1
             new_payload["sampling_params"]["best_of"] = 1
+            new_payload["sampling_params"]["max_tokens"] = 256
             input_length = len(new_payload['request_info']['prompt'])
             
             output = RequestOutput()
@@ -315,6 +336,7 @@ async def send_collective_request(
 
 async def send_request(
     request_info: RequestInput, 
+    model_name: str,
     client_deadline: float = 20,
     pbar: Optional[tqdm] = None,
     is_stream: bool = True,
@@ -323,6 +345,7 @@ async def send_request(
     Send requests to the model and return the responses.
     '''
     api_url = request_info.api_url
+    prompt_format = get_prompt_format_func(model_name)
     request_prompt = prompt_format(request_info.request.prompt)
     request_info.request.prompt = request_prompt
     input_length = len(request_prompt)
@@ -407,6 +430,7 @@ async def client_simulator(
     client_deadline: int,
     api_url: str,
     tot_structure: Tuple[int, int],
+    model_name: str,
     pbar: Optional[tqdm] = None,
     ) -> List[RequestOutput]:
     '''
@@ -422,9 +446,9 @@ async def client_simulator(
         deadline = client_deadline
 
         if request.request_type == RequestType.Collective:
-            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, deadline, pbar)))
+            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, deadline, pbar)))
         else:
-            tasks.append(asyncio.create_task(send_request(request_info, deadline, pbar)))
+            tasks.append(asyncio.create_task(send_request(request_info, model_name, deadline, pbar)))
         
     outputs: List[List[RequestOutput]] = await asyncio.gather(*tasks)
     for output_list in outputs:

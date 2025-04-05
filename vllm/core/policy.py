@@ -94,6 +94,7 @@ class BasePolicy(ABC):
             "srtf": SRTFPolicy,
             "concord": ConcordPolicy,
             "fcfs": FCFSPolicy,
+            "las": LASPolicy,
         }
 
         # Check if policy name exists in the mapping
@@ -167,6 +168,36 @@ class SRTFPolicy(BasePolicy):
         Calculate the priority based on the deadline of the sequence group.
         '''
         return (0, seq_group.deadline)
+    
+
+class LASPolicy(BasePolicy):
+    '''
+    Least-Attained Service (LAS) scheduling policy.
+    This policy prioritizes sequence groups based on the amount of service they have received so far.
+    Sequence groups that have received less service are given higher priority.
+    '''
+    def __init__(
+        self,
+        schedule_interval: int = 20,
+        penalty_factor: int = 1
+    ) -> None:
+        super().__init__(schedule_interval, penalty_factor)
+        logger.info("LAS policy is used")
+    
+    def get_priority(self, seq_group: SequenceGroup) -> float:
+        '''
+        Calculate the priority based on the amount of service received so far.
+        '''
+        decode_len = seq_group.seqs[0].get_decode_len()
+        service = decode_len
+        if seq_group.request_type == RequestType.COLLECTIVE:
+            for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
+                peer_service = peer_seq_group.first_seq.get_decode_len()
+                service += peer_service
+
+        # Split service into discrete intervals, like 200 tokens
+        service = int(service / 200) * 200
+        return (service, seq_group.arrival_time)
 
 
 class ConcordPolicy(BasePolicy):
