@@ -337,6 +337,23 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.block_tables[seq_id].free()
         del self.block_tables[seq_id]
 
+    def free_by_seq_id(self, seq_id: int) -> None:
+        if seq_id not in self.block_tables:
+            # Already freed or haven't been scheduled yet.
+            return
+
+        # Update seq block ids with the latest access time
+        self._last_access_blocks_tracker.update_seq_blocks_last_access(
+            seq_id, self.block_tables[seq_id].physical_block_ids)
+
+        # Untrack seq
+        self._last_access_blocks_tracker.remove_seq(seq_id)
+        self._computed_blocks_tracker.remove_seq(seq_id)
+
+        # Free table/blocks
+        self.block_tables[seq_id].free()
+        del self.block_tables[seq_id]
+
     def free_cross(self, seq_group: SequenceGroup) -> None:
         request_id = seq_group.request_id
         if request_id not in self.cross_block_tables:
@@ -519,6 +536,18 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
 
     def get_num_free_cpu_blocks(self) -> int:
         return self.block_allocator.get_num_free_blocks(Device.CPU)
+
+    def compute_running_seq_group_blocks(self, running_seq_group: List[SequenceGroup]) -> int:
+        """Compute the blocks for the given sequence group."""
+        block_id_list = []
+        block_id_set = set()
+        for seq_group in running_seq_group:
+            for seq in seq_group.get_seqs():
+                block_id_list.extend([block.block_id for block in self.block_tables[seq.seq_id].blocks])
+        block_id_set.update(block_id_list)
+        assert len(block_id_list) == len(block_id_set), \
+            print(f"len(block_id_set): {len(block_id_set)}, len(block_id_list): {len(block_id_list)}")
+        return len(block_id_set)
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_allocator.get_prefix_cache_hit_rate(device)

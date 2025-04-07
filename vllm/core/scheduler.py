@@ -603,6 +603,54 @@ class Scheduler:
         if seq_group.is_encoder_decoder():
             self.block_manager.free_cross(seq_group)
 
+    def check_kv_cache_management(self) -> bool:
+        num_gpu_blocks = self.block_manager.get_num_free_gpu_blocks()
+        num_total_gpu_blocks = self.block_manager.block_allocator.get_num_total_blocks(device=Device.GPU)
+        num_running_blocks = self.block_manager.compute_running_seq_group_blocks(list(self.running))
+
+        if num_gpu_blocks + num_running_blocks == num_total_gpu_blocks:
+            return True
+        else:
+            # Debugging
+            seq_group_list = list(self.running) + list(self.swapped) + list(self.waiting)
+            seq_id_to_seq_group_dict = {
+                seq_group.first_seq.seq_id: seq_group for seq_group in seq_group_list
+            }
+            abort_seq_ids = []
+            for seq_id in self.block_manager.block_tables.keys():
+                seq_group = seq_id_to_seq_group_dict.get(seq_id)
+                if seq_group is not None:
+                    status = seq_group.first_seq.status
+                    if status == SequenceStatus.RUNNING:
+                        if seq_group in self.running:
+                            continue
+                        else:
+                            if seq_group in self.swapped:
+                                logger.warning(f"Sequence {seq_id} got status {status} but not in swapped queue.")
+                            elif seq_group in self.waiting:
+                                logger.warning(f"Sequence {seq_id} got status {status} but not in waiting queue.")
+                            else:
+                                logger.warning(f"Sequence {seq_id} got status {status} but not in any queue.")
+                    elif status == SequenceStatus.SWAPPED:
+                        if seq_group in self.swapped:
+                            continue
+                        else:
+                            if seq_group in self.running:
+                                logger.warning(f"Sequence {seq_id} got status {status} but not in running queue.")
+                            elif seq_group in self.waiting:
+                                logger.warning(f"Sequence {seq_id} got status {status} but not in waiting queue.")
+                            else:
+                                logger.warning(f"Sequence {seq_id} got status {status} but not in any queue.")
+                    else:
+                        num_blocks = len(self.block_manager.block_tables[seq_id])
+                        logger.warning(f"Sequence {seq_id} in {status} state is in the block table, has {num_blocks / num_total_gpu_blocks} blocks.")
+                else:
+                    logger.warning(f"Error in block table: {seq_id} key.")
+                    abort_seq_ids.append(seq_id)
+            
+            for seq_id in abort_seq_ids:
+                self.block_manager.free_by_seq_id(seq_id)
+
     def has_unfinished_seqs(self) -> bool:
         return len(self.waiting) != 0 or len(self.running) != 0 or len(
             self.swapped) != 0
@@ -622,18 +670,22 @@ class Scheduler:
     def stop_dull_scheduling(self) -> List[SequenceGroup]:
         """Stop dull scheduling."""
         abort_seqs: List[SequenceGroup] = []
-        if len(self.running) == 0 and (len(self.waiting) > 0 or len(self.swapped) > 0):
+        if len(self.running) == 0 and (len(self.waiting) > 0 or len(self.swapped) > 0) \
+            and (len(self.waiting) + len(self.swapped)) < 100:
             self.dull_iteration += 1
-            if self.dull_iteration >= 500:
+            if self.dull_iteration >= 2000:
+                self.dull_iteration = 0
                 # remove all infeasible sequence groups
                 for seq_group in self.waiting:
                     for seq in seq_group.get_seqs():
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    abort_seqs.append(seq_group)
+                        seq.status = SequenceStatus.FINISHED_ABORTED
+                        self.free_seq(seq)
+                    abort_seqs.append(seq_group)             
                 self.waiting = deque()
                 for seq_group in self.swapped:
                     for seq in seq_group.get_seqs():
-                        seq.status = SequenceStatus.FINISHED_IGNORED
+                        seq.status = SequenceStatus.FINISHED_ABORTED
+                        self.free_seq(seq)
                     abort_seqs.append(seq_group)
                 self.swapped = deque()
 
@@ -714,6 +766,10 @@ class Scheduler:
             # a memory overflow.
             if self.use_async_output_proc and seq_group.seqs[0].get_len(
             ) > self.scheduler_config.max_model_len:
+                logger.info(f"Stopping seq group {seq_group.collection_id} because it reached max model len, "
+                      f"seq len {seq_group.seqs[0].get_len()}, max model len {self.scheduler_config.max_model_len}")
+                for seq in seq_group.get_seqs():
+                    seq.status = SequenceStatus.FINISHED_ABORTED
                 self._async_stopped.append(seq_group)
                 continue
 
@@ -859,7 +915,8 @@ class Scheduler:
                     "cache blocks to run the entire sequence.",
                     seq_group.request_id)
                 for seq in seq_group.get_seqs():
-                    seq.status = SequenceStatus.FINISHED_IGNORED
+                    seq.status = SequenceStatus.FINISHED_ABORTED
+                    self.free_seq(seq)
                 infeasible_seq_groups.append(seq_group)
                 swapped_queue.popleft()
                 continue
@@ -2342,7 +2399,7 @@ class Scheduler:
                 preemption_mode, self.num_cumulative_preemption + 1)
         self.num_cumulative_preemption += 1
         seq_group.num_cumulative_preemption += 1
-        logger.info(f"Sequence group {seq_group.request_id}: {seq_group.slo_priority} is preempted by {preemption_mode} mode.")
+        logger.info(f"Sequence group {seq_group.collection_id}, seq_id: {seq_group.first_seq.seq_id}: {seq_group.slo_priority} is preempted by {preemption_mode} mode.")
 
         if preemption_mode == PreemptionMode.RECOMPUTE:
             self._preempt_by_recompute(seq_group)
@@ -2364,7 +2421,7 @@ class Scheduler:
         seq_group: SequenceGroup,
     ) -> None:
         seq_group.concord_metrics.reset()
-        seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+        seqs = seq_group.get_seqs()
         assert len(seqs) == 1
         for seq in seqs:
             seq.status = SequenceStatus.WAITING
@@ -2392,8 +2449,7 @@ class Scheduler:
         self.swap_in_count += 1
         
         if self.swap_in_count % 10 == 0:
-            logger.info("average swap in time: {}".format(self.swap_in_time / self.swap_in_count))
-            logger.info(f"total swap in count: {self.swap_in_count}, total swap in time: {self.swap_in_time}")
+            logger.info(f"total swap in count: {self.swap_in_count}, average swap in time: {self.swap_in_time / self.swap_in_count}")
 
     def _swap_out(
         self,
@@ -2415,8 +2471,7 @@ class Scheduler:
         self.swap_out_count += 1
         
         if self.swap_out_count % 10 == 0:
-            logger.info("average swap out time: {}".format(self.swap_out_time / self.swap_out_count))
-            logger.info(f"total swap out count: {self.swap_out_count}, total swap out time: {self.swap_out_time}")
+            logger.info(f"total swap out count: {self.swap_out_count}, average swap out time: {self.swap_out_time / self.swap_out_count}")
 
     def _passed_delay(self, now: float) -> bool:
         if self.prev_prompt:

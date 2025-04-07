@@ -1659,6 +1659,11 @@ class LLMEngine:
                 for scheduler in self.scheduler)
             gpu_cache_usage_sys = 1.0 - (num_free_gpu / num_total_gpu)
 
+        num_running_gpu = sum(
+            scheduler.block_manager.compute_running_seq_group_blocks(list(scheduler.running)) for scheduler in self.scheduler)
+
+        running_cache_usage_sys = num_running_gpu / num_total_gpu if num_total_gpu else 0.0
+
         num_total_cpu = self.cache_config.num_cpu_blocks
         cpu_cache_usage_sys = 0.
         if num_total_cpu:  # Guard against both None and 0
@@ -1819,6 +1824,7 @@ class LLMEngine:
             num_waiting_sys=num_waiting_sys,
             #   KV Cache Usage in %
             gpu_cache_usage_sys=gpu_cache_usage_sys,
+            running_cache_usage_sys=running_cache_usage_sys,
             cpu_cache_usage_sys=cpu_cache_usage_sys,
             #   Prefix Cache Hit Rate
             cpu_prefix_cache_hit_rate=cpu_prefix_cache_hit_rate,
