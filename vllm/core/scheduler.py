@@ -2399,7 +2399,7 @@ class Scheduler:
                 preemption_mode, self.num_cumulative_preemption + 1)
         self.num_cumulative_preemption += 1
         seq_group.num_cumulative_preemption += 1
-        logger.info(f"Sequence group {seq_group.collection_id}, seq_id: {seq_group.first_seq.seq_id}: {seq_group.slo_priority} is preempted by {preemption_mode} mode.")
+        logger.info(f"Sequence group {seq_group.collection_id}, seq_id: {seq_group.first_seq.seq_id}: {self.policy.get_priority(seq_group)} is preempted by {preemption_mode} mode.")
 
         if preemption_mode == PreemptionMode.RECOMPUTE:
             self._preempt_by_recompute(seq_group)

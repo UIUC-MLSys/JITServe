@@ -195,8 +195,8 @@ class LASPolicy(BasePolicy):
                 peer_service = peer_seq_group.first_seq.get_decode_len()
                 service += peer_service
 
-        # Split service into discrete intervals, like 200 tokens
-        service = int(service / 200) * 200
+        # Split service into discrete intervals, like 400 tokens
+        service = int(service / 400) * 400
         return (service, seq_group.arrival_time)
 
 
