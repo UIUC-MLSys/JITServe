@@ -1,6 +1,7 @@
 """Benchmark the latency of processing a single batch of requests."""
 import argparse
 import asyncio
+import copy
 import json
 import numpy as np
 import os
@@ -302,7 +303,8 @@ async def benchmark(
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
 ):
     trace_len = len(trace)
-    requests = (trace * (num_prompts // trace_len + 1))[:num_prompts]
+    # deepcopy
+    requests = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
     
     for id, request in enumerate(requests):
         request.collection_id = id
@@ -358,10 +360,11 @@ async def benchmark(
 
     benchmark_start_time = time.perf_counter()
     # outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
-    if request_rate is None:
-        request_per_user = [requests]
-    else:
-        request_per_user = BaseDataset.divide_by_rate(requests, request_rate)
+    #if request_rate is None:
+    #    request_per_user = [requests]
+    #else:
+    #    request_per_user = BaseDataset.divide_by_rate(requests, request_rate)
+    request_per_user = [requests]
         
     
     client_tasks = []
@@ -377,7 +380,7 @@ async def benchmark(
                     burst=burst,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=2500,
+                    client_deadline=1200,
                     api_url=api_url,
                     tot_structure=tot_structure,
                     pbar=pbar,

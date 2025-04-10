@@ -42,9 +42,9 @@ class BasePolicy(ABC):
         Update the number of scheduler calls.
         '''
         self.num_schedule_count += 1
-        self.seq_group_slo_dict = {}
         if self.num_schedule_count % self.schedule_interval == 0:
             self.update_interval_time(time.time())
+            self.seq_group_slo_dict = {}
             return True
         else:
             return False
