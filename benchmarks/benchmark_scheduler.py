@@ -380,7 +380,7 @@ async def benchmark(
                     burst=burst,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=1200,
+                    client_deadline=3000,
                     api_url=api_url,
                     tot_structure=tot_structure,
                     pbar=pbar,
