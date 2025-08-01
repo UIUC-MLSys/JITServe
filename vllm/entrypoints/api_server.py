@@ -40,6 +40,7 @@ engine = None
 
 # Prediction model
 use_prediction = False
+use_default_length = False
 prediction_model = None
 prediction_tokenizer = None
 
@@ -104,7 +105,8 @@ async def generate(request: Request) -> Response:
     if use_prediction:
         # using network socket to send request to prediction model
         request_info.output_len = 1024
-        threading.Thread(target=send_and_update_request_info, args=(request_info, prompt), daemon=True).start()
+        if not use_default_length:
+            threading.Thread(target=send_and_update_request_info, args=(request_info, prompt), daemon=True).start()
     
     if use_graph_matching and request_info.request_type == RequestType.COLLECTIVE:
         collection_id = request_info.collection_id
@@ -197,6 +199,7 @@ async def init_app(
     global engine
     global use_prediction
     global use_graph_matching
+    global use_default_length
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.max_model_len = 8192 #32768
@@ -210,6 +213,9 @@ async def init_app(
         if engine_args.scheduling_policy in ['concord', 'srtf']:
             use_graph_matching = True
             logger.info(f"Graph matching is enabled")
+
+    if args.use_default_length:
+        use_default_length = True
         
     engine = (llm_engine
               if llm_engine is not None else AsyncLLMEngine.from_engine_args(
@@ -291,6 +297,10 @@ if __name__ == "__main__":
         "--disable-graph-matching",
         action='store_true',
         help="Enable graph matching")
+    parser.add_argument(
+        "--use-default-length",
+        action='store_true',
+        help="Using default length in exp wo prediction model")
     parser.add_argument(
         "--prediction-model-path",
         type=str,

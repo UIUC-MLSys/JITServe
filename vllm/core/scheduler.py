@@ -1215,7 +1215,7 @@ class Scheduler:
         if is_waiting:
             return priority < victim_priority + preemption_overhead
         else:
-            return priority < victim_priority + 2 * preemption_overhead
+            return priority < victim_priority + preemption_overhead
         
     def _schedule_concord_preemption(
         self,

@@ -237,10 +237,10 @@ class ConcordPolicy(BasePolicy):
         adjusted for the scheduling interval and task type.
         '''
         # Starvation Prevent:
-        # every 200 out of 2000 iterations (%10 time) will apply fcfs
-        time_interval = self.schedule_interval * 100
-        if self.num_schedule_count % time_interval < int(time_interval * 0.1):
-            return (0, seq_group.arrival_time)
+        # every 2000 out of 20000 iterations (%10 time) will apply fcfs
+        # time_interval = self.schedule_interval * 1000
+        # if self.num_schedule_count % time_interval < int(time_interval * 0.1):
+        #     return (0, seq_group.arrival_time)
 
         # avoid duplicate calculation
         if self.seq_group_slo_dict.get(seq_group.request_id) is not None:

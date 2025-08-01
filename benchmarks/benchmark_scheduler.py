@@ -31,7 +31,7 @@ except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, 
+from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, TaskOutput,
                               RequestOutput, Trace, RequestFormat, BaseDataset, RequestType)
 
 @dataclass
@@ -82,6 +82,8 @@ def calculate_metrics(
     slo_tbt_meet = [0, 0, 0, 0]         
     slo_ttlt_meet = [0, 0, 0, 0]
     time_window_service_gain = {}
+
+    request_metrics = []
     
     for i in range(len(outputs)):
         for req_idx in range(len(outputs[i])):
@@ -111,8 +113,10 @@ def calculate_metrics(
                         request_slo_meet[task_type] += 1
                         request_slo_meet[3] += 1
                         
-                request_total_input += len(tokenizer(outputs[i][req_idx].request_input, add_special_tokens=False).input_ids)
-                request_total_output += len(tokenizer(outputs[i][req_idx].request_output, add_special_tokens=False).input_ids)
+                request_input_token_length = len(tokenizer(outputs[i][req_idx].request_input, add_special_tokens=False).input_ids)
+                request_output_token_length = len(tokenizer(outputs[i][req_idx].request_output, add_special_tokens=False).input_ids)
+                request_total_input += request_input_token_length
+                request_total_output += request_output_token_length
                 
                 # TODO: finish time or start time
                 finish_time = outputs[i][req_idx].request_finish_time
@@ -136,6 +140,13 @@ def calculate_metrics(
 
                 e2el_data[task_type].append(ttlt)
                 e2el_data[3].append(ttlt)  # Total
+
+                request_metrics.append({
+                    "input_length": request_input_token_length,
+                    "output_length": request_output_token_length,
+                    "TTFT": ttft,
+                    "TBT": tbt_list,
+                })
 
     if request_completed[3] == 0:
         warnings.warn(
@@ -188,7 +199,92 @@ def calculate_metrics(
 
     return metrics
 
-def print_benchmark_results(metrics: BenchmarkMetrics, time_window_seconds: float) -> None:
+@dataclass
+class TaskMetrics:
+    task_num: int
+    task_completed: int
+    task_sum_output_len: int
+    task_time_per_token: List[float]  # 每个token生成所需时间(ms)
+    mean_time_per_token: float
+    median_time_per_token: float
+    percentiles_time_per_token: List[Tuple[float, float]]
+    mean_task_latency_s: float
+    median_task_latency_s: float
+    percentiles_task_latency_s: List[Tuple[float, float]]
+
+def calculate_task_metrics(
+    tasks: List[TaskOutput],
+    tokenizer: PreTrainedTokenizerBase,
+    selected_percentiles: List[float] = [50, 90, 95, 99],
+) -> TaskMetrics:
+    """
+    计算TaskOutput的相关指标
+    
+    Args:
+        tasks: TaskOutput列表
+        tokenizer: 用于计算token长度的tokenizer
+        selected_percentiles: 需要计算的百分位数
+        
+    Returns:
+        TaskMetrics对象包含所有统计指标
+    """
+    task_num = len(tasks)
+    task_completed = 0
+    task_sum_output_len = 0
+    time_per_token_list = []  # 存储每个token生成时间(ms)
+    task_latency_list = []    # 存储任务延迟(ms)
+    
+    for task in tasks:
+        if task.task_latency <= 0:
+            continue
+            
+        task_completed += 1
+        
+        # 计算该task所有output的总token长度
+        task_output_len = sum(
+            len(tokenizer(output, add_special_tokens=False).input_ids)
+            for output in task.task_output
+        )
+        task_sum_output_len += task_output_len
+        
+        if task_output_len > 0:
+            # 计算每个token生成所需时间(ms)
+            time_per_token = (task.task_latency * 1000) / task_output_len
+            time_per_token_list.append(time_per_token)
+        
+        # 收集延迟数据(秒)
+        task_latency_list.append(task.task_latency)
+    
+    # 计算统计指标
+    def compute_percentiles(data: List[float], percentiles: List[float]) -> List[Tuple[float, float]]:
+        if not data:
+            return [(p, 0.0) for p in percentiles]
+        return [(p, np.percentile(data, p)) for p in percentiles]
+    
+    # 每token时间统计
+    mean_time_per_token = np.mean(time_per_token_list) if time_per_token_list else 0
+    median_time_per_token = np.median(time_per_token_list) if time_per_token_list else 0
+    time_per_token_percentiles = compute_percentiles(time_per_token_list, selected_percentiles)
+    
+    # 延迟统计(毫秒)
+    mean_latency = np.mean(task_latency_list) if task_latency_list else 0
+    median_latency = np.median(task_latency_list) if task_latency_list else 0
+    latency_percentiles = compute_percentiles(task_latency_list, selected_percentiles)
+    
+    return TaskMetrics(
+        task_num=task_num,
+        task_completed=task_completed,
+        task_sum_output_len=task_sum_output_len,
+        task_time_per_token=time_per_token_list,
+        mean_time_per_token=mean_time_per_token,
+        median_time_per_token=median_time_per_token,
+        percentiles_time_per_token=time_per_token_percentiles,
+        mean_task_latency_s=mean_latency,
+        median_task_latency_s=median_latency,
+        percentiles_task_latency_s=latency_percentiles,
+    )
+
+def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics, time_window_seconds: float) -> None:
     request_types = ["Latency", "Throughput", "Collective", "Total"]
     separator = "{s:{c}^{n}}".format(s='', n=80, c='-')
     header_separator = "{s:{c}^{n}}".format(s='', n=80, c='=')
@@ -221,6 +317,32 @@ def print_benchmark_results(metrics: BenchmarkMetrics, time_window_seconds: floa
             metrics.request_throughput[i],
             metrics.request_goodput[i]
         ))
+    print(separator)
+
+    # 任务级统计
+    print("\nTask-Level Statistics:")
+    print(separator)
+    print("{:<40} {:<20}".format("Total Tasks", task_metrics.task_num))
+    print("{:<40} {:<20}".format("Completed Tasks", task_metrics.task_completed))
+    print("{:<40} {:<20}".format("Total Task Output Tokens", task_metrics.task_sum_output_len))
+    print("{:<40} {:<20.2f}".format("Mean Time per Token (ms/token)", task_metrics.mean_time_per_token))
+    print("{:<40} {:<20.2f}".format("Median Time per Token (ms/token)", task_metrics.median_time_per_token))
+    print("{:<40} {:<20.2f}".format("Mean Task Latency (s)", task_metrics.mean_task_latency_s))
+    print("{:<40} {:<20.2f}".format("Median Task Latency (s)", task_metrics.median_task_latency_s))
+    print(separator)
+
+    # 每token时间百分位数
+    print("\nTime per Token Percentiles (ms/token):")
+    print("{:<10} {:<15}".format("Percentile", "Value"))
+    for p, val in task_metrics.percentiles_time_per_token:
+        print("{:<10} {:<15.2f}".format(f"P{int(p)}", val))
+    print(separator)
+
+    # 任务延迟百分位数
+    print("\nTask Latency Percentiles (s):")
+    print("{:<10} {:<15}".format("Percentile", "Value"))
+    for p, val in task_metrics.percentiles_task_latency_s:
+        print("{:<10} {:<15.2f}".format(f"P{int(p)}", val))
     print(separator)
 
     def print_latency_stats(metrics: BenchmarkMetrics, metric_name: str):
@@ -380,7 +502,7 @@ async def benchmark(
                     burst=burst,
                     sampling_params=sampling_params,
                     client_id=client_id,
-                    client_deadline=3000,
+                    client_deadline=5000,
                     api_url=api_url,
                     tot_structure=tot_structure,
                     pbar=pbar,
@@ -388,9 +510,11 @@ async def benchmark(
             )
     )
 
-    results: List[List[RequestOutput]] = await asyncio.gather(*client_tasks)
+    results: List[Tuple[List[RequestOutput], List[TaskOutput]]] = await asyncio.gather(*client_tasks)
     outputs: List[RequestOutput] = [output for result in results 
-                            for output in result]
+                            for output in result[0]]
+    tasks: List[TaskOutput] = [task_output for result in results
+                            for task_output in result[1]]
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
 
@@ -402,8 +526,14 @@ async def benchmark(
         slo_constraint=slo_constraint,
         time_window_seconds=60,
     )
+
+    task_metrics = calculate_task_metrics(
+        tasks=tasks,
+        tokenizer=tokenizer,
+        selected_percentiles=selected_percentiles,
+    )
     
-    print_benchmark_results(metrics, time_window_seconds=60)
+    print_benchmark_results(metrics, task_metrics, time_window_seconds=60)
 
 
 def main(args: argparse.Namespace):
@@ -503,7 +633,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="benchmarks/dataset/trace/lmsys.json",
+        default="benchmarks/dataset/trace/longcontext.json",
         help="Path to the trace file.",
     )
     parser.add_argument(

@@ -40,10 +40,17 @@ class RequestOutput:
         self.request_service_gain = 0
         self.request_latency = 0
         self.request_finish_time = 0
+        # Task level metrics
+        self.task_latency = 0
         # Debug porpeties
         self.success = False
         self.error = ""
 
+class TaskOutput:
+    # Task level metric
+    def __init__(self):
+        self.task_latency = 0
+        self.task_output = []
 
 def remove_prefix(text: str, prefix: str) -> str:
     if text.startswith(prefix):
@@ -95,7 +102,8 @@ async def get_request(
     
     # if burst using the burst pattern
     if burst:
-        df = pd.read_csv('trace/BurstGPT_1.csv')
+        print("Using BurstGPT pattern.")
+        df = pd.read_csv('/home/exouser/Concord/benchmarks/trace/BurstGPT_1.csv')
         timestamps = df['Timestamp'].tolist()
         original_req_rate = request_num * 1000 / timestamps[request_num - 1]
         target_req_rate = 1 / poisson_lambda * 1000
@@ -320,9 +328,11 @@ async def send_collective_request(
                 for output in output_list:
                     output.finish_before_ddl = False
                     output.request_service_gain *= slo_violation_penalty
+                    output.task_latency = task_latency
             else:
                 for output in output_list:
                     output.finish_before_ddl = True
+                    output.task_latency = task_latency
         except Exception:
             exc_info = sys.exc_info()
             error = "".join(traceback.format_exception(*exc_info))
@@ -432,7 +442,7 @@ async def client_simulator(
     tot_structure: Tuple[int, int],
     model_name: str,
     pbar: Optional[tqdm] = None,
-    ) -> List[RequestOutput]:
+    ) -> Tuple[List[RequestOutput], List[TaskOutput]]:
     '''
     Execute the client to send requests to the model.
     '''
@@ -451,8 +461,21 @@ async def client_simulator(
             tasks.append(asyncio.create_task(send_request(request_info, model_name, deadline, pbar)))
         
     outputs: List[List[RequestOutput]] = await asyncio.gather(*tasks)
+    tasks: List[TaskOutput] = []
     for output_list in outputs:
+        if len(output_list) == 0:
+            continue
+        output_type = output_list[0].request_type
+        output_success = output_list[0].success
+        if output_success is False:
+            continue
+        if output_type == 2:
+            task_output = TaskOutput()
+            task_output.task_latency = output_list[0].task_latency
+            for output in output_list:
+                task_output.task_output.append(output.request_output)
+            tasks.append(task_output)
         for output in output_list:
             output.request_finish_time -= start_time
     
-    return outputs
+    return outputs, tasks
