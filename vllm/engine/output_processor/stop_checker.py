@@ -43,6 +43,11 @@ class StopChecker:
         if seq.get_output_len() < sampling_params.min_tokens:
             return
 
+        # Check if the sequence has reached max_model_len.
+        if seq.get_len() > self._get_max_model_len(lora_req):
+            seq.status = SequenceStatus.FINISHED_LENGTH_CAPPED
+            return
+
         # Primary check: Use client-specified output length to determine when to stop
         # This replaces EOS token checking
         if hasattr(sampling_params, 'target_output_length') and sampling_params.target_output_length:
@@ -80,11 +85,6 @@ class StopChecker:
         if stop_str is not None:
             seq.status = SequenceStatus.FINISHED_STOPPED
             seq.stop_reason = stop_str
-            return
-
-        # Check if the sequence has reached max_model_len.
-        if seq.get_len() > self._get_max_model_len(lora_req):
-            seq.status = SequenceStatus.FINISHED_LENGTH_CAPPED
             return
 
         # Check if the sequence has reached max_tokens.

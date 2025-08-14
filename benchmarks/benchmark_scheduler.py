@@ -457,6 +457,7 @@ async def benchmark(
         test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
                                                                          model_name=model, 
                                                                          tot_structure=tot_structure,
+                                                                         penalty_factor=penalty_factor,
                                                                          client_deadline=200)
     else:
         test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model, client_deadline=200)
