@@ -456,9 +456,10 @@ async def benchmark(
     if test_input.request.request_type == RequestType.Collective:
         test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
                                                                          model_name=model, 
-                                                                         tot_structure=tot_structure)
+                                                                         tot_structure=tot_structure,
+                                                                         client_deadline=200)
     else:
-        test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model)
+        test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model, client_deadline=200)
     if not test_output[0].success:
         raise ValueError(
             "Initial test run failed - Please make sure benchmark arguments "
@@ -508,7 +509,7 @@ async def benchmark(
                     pbar=pbar,
                 )
             )
-    )
+        )
 
     results: List[Tuple[List[RequestOutput], List[TaskOutput]]] = await asyncio.gather(*client_tasks)
     outputs: List[RequestOutput] = [output for result in results 
