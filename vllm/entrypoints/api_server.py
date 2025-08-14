@@ -94,7 +94,15 @@ async def generate(request: Request) -> Response:
     stream = request_dict.pop("stream", False)
     client_id = request_dict.get("client_id", 0)
     
-    sampling_params = SamplingParams(**request_dict.pop("sampling_params"))
+    # Extract target_output_length if provided by client
+    target_output_length = request_dict.pop("target_output_length", None)
+    
+    sampling_params_dict = request_dict.pop("sampling_params")
+    # Add target_output_length to sampling params if provided
+    if target_output_length is not None:
+        sampling_params_dict["target_output_length"] = target_output_length
+    
+    sampling_params = SamplingParams(**sampling_params_dict)
     
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id
@@ -304,12 +312,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prediction-model-path",
         type=str,
-        default='/home/exouser/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
+        default='/home/jovyan/workspace/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
         help="Path to the prediction model")
     parser.add_argument(
         "--prediction-tokenizer-path",
         type=str,
-        default='/home/exouser/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
+        default='/home/jovyan/workspace/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
         help="Path to the prediction tokenizer")
     parser.add_argument("--log-level", type=str, default="debug")
     parser = AsyncEngineArgs.add_cli_args(parser)

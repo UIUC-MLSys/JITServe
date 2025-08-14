@@ -184,6 +184,7 @@ class SamplingParams(
     ignore_eos: bool = False
     max_tokens: Optional[int] = 16
     min_tokens: int = 0
+    target_output_length: Optional[int] = None
     logprobs: Optional[int] = None
     prompt_logprobs: Optional[int] = None
     # NOTE: This parameter is only exposed at the engine level for now.
@@ -228,6 +229,7 @@ class SamplingParams(
         ignore_eos: bool = False,
         max_tokens: Optional[int] = 16,
         min_tokens: int = 0,
+        target_output_length: Optional[int] = None,
         logprobs: Optional[int] = None,
         prompt_logprobs: Optional[int] = None,
         detokenize: bool = True,
@@ -268,6 +270,7 @@ class SamplingParams(
             ignore_eos=ignore_eos,
             max_tokens=max_tokens,
             min_tokens=min_tokens,
+            target_output_length=target_output_length,
             logprobs=logprobs,
             prompt_logprobs=prompt_logprobs,
             detokenize=detokenize,

@@ -103,7 +103,7 @@ async def get_request(
     # if burst using the burst pattern
     if burst:
         print("Using BurstGPT pattern.")
-        df = pd.read_csv('/home/exouser/Concord/benchmarks/trace/BurstGPT_1.csv')
+        df = pd.read_csv('/home/jovyan/workspace/Concord/benchmarks/trace/BurstGPT_1.csv')
         timestamps = df['Timestamp'].tolist()
         original_req_rate = request_num * 1000 / timestamps[request_num - 1]
         target_req_rate = 1 / poisson_lambda * 1000
@@ -152,6 +152,7 @@ async def send_collective_request(
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
             "stream": is_stream,
+            "target_output_length": request_info.request.output_len,  # Send output length to server
         }
         st = time.perf_counter()
         
@@ -164,6 +165,8 @@ async def send_collective_request(
             new_payload["sampling_params"]["n"] = 1
             new_payload["sampling_params"]["best_of"] = 1
             new_payload["sampling_params"]["max_tokens"] = 256
+            # Use the output_len from request as target for stopping
+            new_payload["target_output_length"] = request_info.request.output_len
             
             output = RequestOutput()
             output.request_input = input_prompt
@@ -236,6 +239,8 @@ async def send_collective_request(
             new_payload["sampling_params"]["n"] = 1
             new_payload["sampling_params"]["best_of"] = 1
             new_payload["sampling_params"]["max_tokens"] = 256
+            # Use the output_len from request as target for stopping
+            new_payload["target_output_length"] = request_info.request.output_len
             input_length = len(new_payload['request_info']['prompt'])
             
             output = RequestOutput()
@@ -371,7 +376,8 @@ async def send_request(
             "slo_constraint": request_info.slo_constraint,
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
-            "stream": is_stream
+            "stream": is_stream,
+            "target_output_length": request_info.request.output_len,  # Send output length to server
         }
         st = time.perf_counter()
         

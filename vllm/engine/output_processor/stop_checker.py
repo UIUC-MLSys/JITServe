@@ -39,10 +39,18 @@ class StopChecker:
         """
 
         # Check if the minimum number of tokens has been generated yet;
-        # skip the stop string/token checks if not
+        # skip the stop checks if not
         if seq.get_output_len() < sampling_params.min_tokens:
             return
 
+        # Primary check: Use client-specified output length to determine when to stop
+        # This replaces EOS token checking
+        if hasattr(sampling_params, 'target_output_length') and sampling_params.target_output_length:
+            if seq.get_output_len() >= sampling_params.target_output_length:
+                seq.status = SequenceStatus.FINISHED_STOPPED
+                return
+
+        # Fallback to original stop conditions if target_output_length not specified
         # Check if the sequence has generated the EOS token.
         if ((not sampling_params.ignore_eos)
                 and seq.get_last_token_id() == seq.eos_token_id):

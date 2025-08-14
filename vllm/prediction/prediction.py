@@ -64,8 +64,8 @@ def start_client(model_path: str, tokenizer_path: str):
         # Handle each request
         handle_request(connection, model, tokenizer)
 
-model_path = '/home/exouser/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl'
-tokenizer_path = '/home/exouser/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl'
+model_path = '/home/jovyan/workspace/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl'
+tokenizer_path = '/home/jovyan/workspace/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl'
 
 if __name__ == "__main__":
     start_client(model_path, tokenizer_path)
