@@ -75,6 +75,7 @@ class SequenceStatus(enum.IntEnum):
     FINISHED_LENGTH_CAPPED = 4
     FINISHED_ABORTED = 5
     FINISHED_IGNORED = 6
+    FINISHED_LENGTH_REACHED = 7
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -93,6 +94,10 @@ class SequenceStatus(enum.IntEnum):
             # are longer than the model's length cap. Therefore, the stop
             # reason should also be "length" as in OpenAI API.
             finish_reason = "length"
+        elif status == SequenceStatus.FINISHED_LENGTH_REACHED:
+            # The sequences that are finished because they reached the
+            # length cap.
+            finish_reason = "output_length reached"
         else:
             finish_reason = None
         return finish_reason
@@ -491,6 +496,7 @@ class Sequence:
         self.data = SequenceData.from_seqs(self.prompt_token_ids)
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
+        self.real_output_len = 0
 
         self.status = SequenceStatus.WAITING
         self.stop_reason: Union[int, str, None] = None
@@ -769,9 +775,13 @@ class SequenceGroup:
         self.prediction_task = request_info.prediction_task
         self.real_output_len = request_info.real_output_len
         self.request_info = request_info
+        self.input_len = request_info.input_len
         self.concord_metrics = RequestConcordMetrics(time.time())
 
         self.cached_request_output = None
+
+        for seq in self.seqs:
+            seq.real_output_len = self.real_output_len
 
     @property
     def prompt(self) -> Optional[str]:

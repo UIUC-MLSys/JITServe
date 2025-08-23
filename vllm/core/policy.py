@@ -208,7 +208,7 @@ class ConcordPolicy(BasePolicy):
     '''
     def __init__(
         self,
-        schedule_interval: int = 20,
+        schedule_interval: int = 100,
         penalty_factor: int = 1
     ) -> None:
         super().__init__(schedule_interval, penalty_factor)

@@ -262,6 +262,7 @@ class _AsyncLLMEngine(LLMEngine):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.last_execute_time = time.time()
 
     async def step_async(
         self, virtual_engine: int
@@ -297,11 +298,35 @@ class _AsyncLLMEngine(LLMEngine):
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
 
+            debug_info = []
+            for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
+                debug_info.append((scheduled_seq_group.seq_group.collection_id, scheduled_seq_group.seq_group.first_seq.seq_id, scheduled_seq_group.seq_group.input_len))
+
+            if len(debug_info) != 0:
+                debug_batch_size = len(debug_info)
+                cur_time = time.time()
+                batch_execute_time = cur_time - self.last_execute_time
+                self.last_execute_time = cur_time
+
+                logger.info(f"[Batch Execution]")
+                logger.info(f"  Time taken      : {batch_execute_time:.4f} s")
+                logger.info(f"  Batch size      : {debug_batch_size}")
+                logger.info(f"  Request details :")
+
+                req_id_list = []
+                for collection_id, req_id, input_len in debug_info:
+                    logger.info(f"    - Collection ID: {collection_id}, Request ID: {req_id}, Input Length: {input_len}")
+                    if req_id in req_id_list:
+                        logger.warning(f"    - Request ID {req_id} is duplicated in the batch!")
+                    else:
+                        req_id_list.append(req_id)
+
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 
             # Maybe switch from async mode to sync mode
             if not allow_async_output_proc and len(ctx.output_queue) > 0:
+                logger.info("Switching to synchronous output processing. 1")
                 self._process_model_outputs(ctx=ctx)
 
             if (self.scheduler_config.is_multi_step
@@ -358,6 +383,7 @@ class _AsyncLLMEngine(LLMEngine):
                 self._update_cached_scheduler_output(virtual_engine, outputs)
         else:
             if len(ctx.output_queue) > 0:
+                logger.info("Switching to synchronous output processing. 2")
                 self._process_model_outputs(ctx=ctx)
             outputs = []
 
@@ -389,11 +415,13 @@ class _AsyncLLMEngine(LLMEngine):
                 assert len(
                     outputs
                 ) == 1, "Async postprocessor expects only a single output set"
+                logger.info("Async postprocessor is processing outputs in parallel with the GPU forward pass.")
                 self._advance_to_next_step(
                     outputs[0], seq_group_metadata_list,
                     scheduler_outputs.scheduled_seq_groups)
 
             if not allow_async_output_proc:
+                logger.info("Switching to synchronous output processing. 3")
                 self._process_model_outputs(ctx=ctx)
 
                 # Log stats.
@@ -409,6 +437,7 @@ class _AsyncLLMEngine(LLMEngine):
         if not self.has_unfinished_requests():
             # Drain async postprocessor (if exists)
             if len(ctx.output_queue) > 0:
+                logger.info("Switching to synchronous output processing. 4")
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
 

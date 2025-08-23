@@ -46,12 +46,23 @@ class StopChecker:
         # Check if the sequence has generated the EOS token.
         if ((not sampling_params.ignore_eos)
                 and seq.get_last_token_id() == seq.eos_token_id):
-            # Remove the last EOS token unless explicitly specified
-            # This prevents unintended exposure of the EOS token
-            if new_char_count and (
-                    not sampling_params.include_stop_str_in_output):
-                seq.output_text = seq.output_text[:-new_char_count]
+            if seq.get_output_len() >= seq.real_output_len:
+                # Remove the last EOS token unless explicitly specified
+                # This prevents unintended exposure of the EOS token
+                if new_char_count and (
+                        not sampling_params.include_stop_str_in_output):
+                    seq.output_text = seq.output_text[:-new_char_count]
+                seq.status = SequenceStatus.FINISHED_STOPPED
+            else:
+                seq.data._output_token_ids[-1] = seq.eos_token_id + 1  # Mark EOS token as not generated
+            seq.stop_reason = seq.eos_token_id
+            return
+
+        if seq.get_output_len() >= seq.real_output_len:
+            # If the sequence has reached its real output length,
+            # we consider it finished.
             seq.status = SequenceStatus.FINISHED_STOPPED
+            seq.stop_reason = seq.eos_token_id
             return
 
         # Check if a stop token was encountered.

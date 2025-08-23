@@ -423,17 +423,101 @@ async def benchmark(
     slo_constraint: Tuple[float, float, float], # (ttft, tbt, ttlt)
     penalty_factor: int,
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
+    trace_pattern: Optional[str] = "hetero",  # e.g., "homo", "hetero", "random"
+    output_pattern: Optional[str] = None,  # e.g., "homo"
 ):
     trace_len = len(trace)
+    total_output_len = sum(
+        (item.output_len * 14 if item.request_type == RequestType.Collective else item.output_len)
+        for item in trace
+    )
+    total_request_number = sum(
+        (14 if item.request_type == RequestType.Collective else 1)
+        for item in trace
+    )
+    average_output_len = total_output_len // total_request_number
     # deepcopy
-    requests = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
-    
+    if trace_pattern == "homo":
+        print("Using homo trace pattern for requests.")
+        update_trace = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
+        total_input_len = sum(update_trace[i].prompt_len for i in range(len(update_trace)))
+        requests = []
+        input_len = total_input_len // len(update_trace)
+        vocab_size = tokenizer.vocab_size
+        num_special_tokens = tokenizer.num_special_tokens_to_add()
+        real_input_len = input_len - num_special_tokens
+        offsets = np.random.randint(0, vocab_size, size=num_prompts)
+
+        for i, real_trace in enumerate(update_trace):
+            inner_seq = (
+                (offsets[i] + i + np.arange(real_input_len)) % vocab_size
+            ).tolist()
+            token_sequence = inner_seq
+            prompt = tokenizer.decode(token_sequence)
+            # After decoding the prompt we have to encode and decode it again.
+            # This is done because in some cases N consecutive tokens
+            # give a string tokenized into != N number of tokens.
+            # For example for GPT2Tokenizer:
+            # [6880, 6881] -> ['Ġcalls', 'here'] ->
+            # [1650, 939, 486] -> ['Ġcall', 'sh', 'ere']
+            # To avoid uncontrolled change of the prompt length,
+            # the encoded sequence is truncated before being decode again.
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[
+                :real_input_len
+            ]
+            prompt = tokenizer.decode(re_encoded_sequence)
+            real_trace.prompt = prompt
+            real_trace.prompt_len = len(re_encoded_sequence)
+            
+            requests.append(real_trace)
+    elif trace_pattern == "hetero":
+        print("Using hetero trace pattern for requests.")
+        update_trace = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
+        total_input_len = sum(update_trace[i].prompt_len for i in range(len(update_trace)))
+        requests = []
+        input_len = total_input_len // len(update_trace)
+        vocab_size = tokenizer.vocab_size
+        num_special_tokens = tokenizer.num_special_tokens_to_add()
+        offsets = np.random.randint(0, vocab_size, size=num_prompts)
+
+        for i, real_trace in enumerate(update_trace):
+            real_input_len = update_trace[i].prompt_len - num_special_tokens
+            inner_seq = (
+                (offsets[i] + i + np.arange(real_input_len)) % vocab_size
+            ).tolist()
+            token_sequence = inner_seq
+            prompt = tokenizer.decode(token_sequence)
+            # After decoding the prompt we have to encode and decode it again.
+            # This is done because in some cases N consecutive tokens
+            # give a string tokenized into != N number of tokens.
+            # For example for GPT2Tokenizer:
+            # [6880, 6881] -> ['Ġcalls', 'here'] ->
+            # [1650, 939, 486] -> ['Ġcall', 'sh', 'ere']
+            # To avoid uncontrolled change of the prompt length,
+            # the encoded sequence is truncated before being decode again.
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[
+                :real_input_len
+            ]
+            prompt = tokenizer.decode(re_encoded_sequence)
+            real_trace.prompt = prompt
+            real_trace.prompt_len = len(re_encoded_sequence)
+            requests.append(real_trace)
+    elif trace_pattern is None:
+        print("Using real trace pattern for requests.")
+        requests = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
+
+    if output_pattern == "same":
+        for id, request in enumerate(requests):
+            request.output_len = average_output_len
+            request.collection_id = id
+
     for id, request in enumerate(requests):
         request.collection_id = id
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
     test_request: RequestFormat = requests[0]
+    test_request.output_len = 10
     sampling_params = SamplingParams(
         n=n,              
         temperature=0.0,
