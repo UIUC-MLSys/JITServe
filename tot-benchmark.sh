@@ -135,7 +135,8 @@ for test_case in "${test_cases[@]}"; do
             --batch-size "$batch_size" \
             --slo-constraint "$slo_constraint" \
             --burst True \
-            --num-prompts "$num_prompts" > "$output_file" 2>&1
+            --num-prompts "$num_prompts" \
+            --is-stream True > "$output_file" 2>&1
 
         # 停止服务器
         echo "停止服务器..."

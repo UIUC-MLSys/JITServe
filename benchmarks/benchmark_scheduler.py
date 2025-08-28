@@ -423,6 +423,7 @@ async def benchmark(
     slo_constraint: Tuple[float, float, float], # (ttft, tbt, ttlt)
     penalty_factor: int,
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
+    is_stream: bool = True,
 ):
     trace_len = len(trace)
     # deepcopy
@@ -507,6 +508,7 @@ async def benchmark(
                     client_deadline=5000,
                     api_url=api_url,
                     tot_structure=tot_structure,
+                    is_stream=is_stream,
                     pbar=pbar,
                 )
             )
@@ -612,6 +614,7 @@ def main(args: argparse.Namespace):
             slo_constraint=tuple(map(float, args.slo_constraint.split(","))),
             penalty_factor=args.penalty_factor,
             tot_structure=(args.tot_thoughts, args.tot_rounds),
+            is_stream=args.is_stream,
         ))
 
 
@@ -658,8 +661,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--burst",
-        type=bool,
-        default=False,
+        choices=["True", "False"],
+        default="False",
         help="Specify to use burst request arrvial pattern.",
     )
     parser.add_argument(
@@ -771,6 +774,12 @@ if __name__ == '__main__':
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--is-stream",
+        choices=["True", "False"],
+        default="True",
+        help="Whether to use streaming mode for requests (default: True)",
+    )
+    parser.add_argument(
         "--trust-remote-code",
         action="store_true",
         help="Trust remote code from huggingface",
@@ -833,4 +842,9 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+    
+    # Convert string arguments to boolean
+    args.burst = args.burst == "True"
+    args.is_stream = args.is_stream == "True"
+    
     main(args)

@@ -12,20 +12,33 @@ Defalut_ToT_Requests_Pattern = [3, 1, 9, 1]
 Default_DeepResearch_Stage = 6
 Default_DeepResearch_Requests_Pattern = [1, 1, 1, 1, 1, 1]
 
+# Define common graph structure classes
 class Vertex:
-    def __init__(self, attr):
-        self.attr = attr
+    def __init__(self, weight):
+        self.weight = weight
 
 class Edge:
     def __init__(self, weight):
         self.weight = weight
 
 class Graph:
-    def __init__(self, vertices, edges, total_time, stage_ratio):
-        self.vertices = vertices
-        self.edges = edges
-        self.total_time = total_time
-        self.stage_ratio = stage_ratio
+    def __init__(self, 
+                vertices: List[List[Vertex]],  # List of lists: each inner list represents vertices in one stage
+                edges: List[List[Edge]],       # List of lists: each inner list represents edges in one stage
+                times: Optional[List[float]]=None,
+                is_all_node: bool=False):
+        self.vertices = vertices  # List of lists of vertices per stage
+        self.edges = edges        # List of lists of edges per stage
+        self.times = times
+        self.is_all_node = is_all_node  # Flag for all-node approach
+        
+    def get_num_stages(self):
+        """Get the number of stages in this graph."""
+        return len(self.vertices)
+    
+    def get_stage_sizes(self):
+        """Get the number of vertices in each stage."""
+        return [len(stage_vertices) for stage_vertices in self.vertices]
 
     def __len__(self):
         return len(self.edges)
@@ -34,12 +47,20 @@ class ToTStructure:
     def __init__(
         self, 
         stage_num: int = Defalut_ToT_Stage, 
-        request_per_stage: List[int] = Defalut_ToT_Requests_Pattern
+        request_per_stage: List[int] = Defalut_ToT_Requests_Pattern,
+        use_all_node: bool = False,
+        stage_ratio_method: str = "execution_time"  # "execution_time" or "output_length"
     ) -> None:
         self.stage_num = stage_num
         self.request_per_stage = request_per_stage
-        self.output_input_ratio: List[float] = []
-        self.current_stage_length: List[float] = []
+        self.use_all_node = use_all_node
+        self.stage_ratio_method = stage_ratio_method
+        
+        # Store individual request data for all-node approach
+        self.stage_input_lengths: List[List[int]] = []
+        self.stage_output_lengths: List[List[int]] = []
+        self.current_stage_requests: List[Tuple[int, int]] = []  # (input_len, output_len)
+        
         self.current_time = time.time()
         self.stage_finish_time = []
         self.stage_finished = 0
@@ -50,8 +71,9 @@ class ToTStructure:
         assert len(request_per_stage) == stage_num, "The length of request_per_stage should be equal to stage_num"
         
     def reset(self) -> None:
-        self.output_input_ratio = []
-        self.current_stage_length = []
+        self.stage_input_lengths = []
+        self.stage_output_lengths = []
+        self.current_stage_requests = []
         self.current_time = time.time()
         self.stage_finish_time = []
         self.stage_finished = 0
@@ -60,13 +82,16 @@ class ToTStructure:
     def update(self) -> None:
         if (self.stage_finished) >= len(self.request_per_stage):
             return
-        if len(self.current_stage_length) == self.request_per_stage[self.stage_finished]:
+        if len(self.current_stage_requests) == self.request_per_stage[self.stage_finished]:
             self.stage_finished += 1
-            stage_input_length = sum([length[0] for length in self.current_stage_length])
-            stage_output_length = sum([length[1] for length in self.current_stage_length])
-            current_stage_ratio = stage_output_length / stage_input_length
-            self.output_input_ratio.append(current_stage_ratio)
-            self.current_stage_length = []
+            
+            # Store the request data for this stage
+            stage_inputs = [req[0] for req in self.current_stage_requests]
+            stage_outputs = [req[1] for req in self.current_stage_requests]
+            
+            self.stage_input_lengths.append(stage_inputs)
+            self.stage_output_lengths.append(stage_outputs)
+            self.current_stage_requests = []
             
             stage_elapsed = time.time() - self.current_time
             # Ensure minimum stage time to avoid zero timing
@@ -87,7 +112,7 @@ class ToTStructure:
             True if the ToT structure is finished, False otherwise
         """
         with self._lock:
-            self.current_stage_length.append((input_length, output_length))
+            self.current_stage_requests.append((input_length, output_length))
             self.update()
         
             # Check if finished by stage completion or request_output.finished flag
@@ -98,38 +123,108 @@ class ToTStructure:
                 return False
         
     def convert_to_graph(self) -> Graph:
-        vertices = [Vertex(1) for _ in range(self.stage_num)]
-        edges = [Edge(weight) for weight in self.output_input_ratio]
-        total_time = sum(self.stage_finish_time) if self.stage_finish_time else 0.001
-        
-        # Ensure minimum total_time to avoid division by zero
-        if total_time <= 0:
-            total_time = 0.001  # 1ms minimum
-            
-        # Calculate stage ratios, handling empty stage_finish_time
-        if self.stage_finish_time:
-            stage_ratio = [stage_time / total_time for stage_time in self.stage_finish_time]
-        else:
-            # Default uniform distribution if no timing data
-            stage_ratio = [1.0 / len(vertices)] * len(vertices)
-        
-        return Graph(vertices, edges, total_time, stage_ratio)
-    
-    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
-        new_vertice = Vertex(1)
-        assert input_length != 0, "The input_length should not be zero"
-        new_edge = Edge(predict_output_length / input_length)
+        """Convert ToT structure to new graph format with configurable approaches."""
         vertices = []
         edges = []
         
-        for i in range(self.stage_finished - 1):
-            vertices.append(Vertex(1))
-            edges.append(Edge(self.output_input_ratio[i]))
-            
-        vertices.append(new_vertice)
-        edges.append(new_edge)
+        if self.use_all_node:
+            # All-node approach: each request becomes a node
+            for stage_idx in range(len(self.stage_output_lengths)):
+                stage_vertices = []
+                stage_edges = []
+                
+                stage_outputs = self.stage_output_lengths[stage_idx]
+                stage_inputs = self.stage_input_lengths[stage_idx]
+                
+                # Create vertex for each request (weight = output length)
+                for output_len in stage_outputs:
+                    stage_vertices.append(Vertex(output_len))
+                
+                # Create edge for each request (weight = input length)
+                for input_len in stage_inputs:
+                    stage_edges.append(Edge(input_len))
+                    
+                vertices.append(stage_vertices)
+                edges.append(stage_edges)
+        else:
+            # Super-node approach: one node per stage
+            for stage_idx in range(len(self.stage_output_lengths)):
+                stage_outputs = self.stage_output_lengths[stage_idx]
+                stage_inputs = self.stage_input_lengths[stage_idx]
+                
+                # Vertex weight = sum of output lengths in stage
+                total_output = sum(stage_outputs)
+                vertices.append([Vertex(total_output)])
+                
+                # Edge weight = sum of input lengths in stage
+                total_input = sum(stage_inputs)
+                edges.append([Edge(total_input)])
         
-        return Graph(vertices, edges, 0, [])
+        # Calculate stage ratios based on method
+        if self.stage_ratio_method == "execution_time" and self.stage_finish_time:
+            total_time = sum(self.stage_finish_time)
+            if total_time <= 0:
+                total_time = 0.001
+            stage_ratios = [t / total_time for t in self.stage_finish_time]
+        elif self.stage_ratio_method == "output_length" and self.stage_output_lengths:
+            # Use max output length of each stage
+            stage_max_outputs = [max(stage_outputs) if stage_outputs else 0 
+                               for stage_outputs in self.stage_output_lengths]
+            total_output = sum(stage_max_outputs)
+            if total_output > 0:
+                stage_ratios = [max_out / total_output for max_out in stage_max_outputs]
+            else:
+                stage_ratios = [1.0 / len(self.stage_output_lengths)] * len(self.stage_output_lengths)
+        else:
+            # Default uniform distribution
+            num_stages = len(self.stage_output_lengths) if self.stage_output_lengths else self.stage_num
+            stage_ratios = [1.0 / num_stages] * num_stages
+        
+        return Graph(vertices, edges, stage_ratios, self.use_all_node)
+    
+    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
+        """Convert unfinished ToT structure to graph with predicted next stage."""
+        vertices = []
+        edges = []
+        
+        # Add completed stages
+        if self.use_all_node:
+            # All-node approach
+            for stage_idx in range(len(self.stage_output_lengths)):
+                stage_vertices = []
+                stage_edges = []
+                
+                stage_outputs = self.stage_output_lengths[stage_idx]
+                stage_inputs = self.stage_input_lengths[stage_idx]
+                
+                for output_len in stage_outputs:
+                    stage_vertices.append(Vertex(output_len))
+                for input_len in stage_inputs:
+                    stage_edges.append(Edge(input_len))
+                    
+                vertices.append(stage_vertices)
+                edges.append(stage_edges)
+            
+            # Add predicted stage
+            vertices.append([Vertex(predict_output_length)])
+            edges.append([Edge(input_length)])
+        else:
+            # Super-node approach
+            for stage_idx in range(len(self.stage_output_lengths)):
+                stage_outputs = self.stage_output_lengths[stage_idx]
+                stage_inputs = self.stage_input_lengths[stage_idx]
+                
+                total_output = sum(stage_outputs)
+                total_input = sum(stage_inputs)
+                
+                vertices.append([Vertex(total_output)])
+                edges.append([Edge(total_input)])
+            
+            # Add predicted stage
+            vertices.append([Vertex(predict_output_length)])
+            edges.append([Edge(input_length)])
+        
+        return Graph(vertices, edges, None, self.use_all_node)
 
 
 class DeepResearchStructure:
@@ -138,9 +233,11 @@ class DeepResearchStructure:
     Unlike ToT which has a fixed pattern, DeepResearch can have varying numbers
     of stages and requests per stage.
     """
-    def __init__(self) -> None:
+    def __init__(self, use_all_node: bool = False, stage_ratio_method: str = "execution_time") -> None:
         self.collective_requests: Dict[int, Dict[str, Any]] = {}
         self.current_time = time.time()
+        self.use_all_node = use_all_node
+        self.stage_ratio_method = stage_ratio_method
         self._lock = threading.Lock()
         
     def reset(self) -> None:
@@ -157,13 +254,14 @@ class DeepResearchStructure:
                 'num_stages': num_stages,
                 'requests_per_stage': requests_per_stage,
                 'completed_stages': 0,
-                'stage_outputs': [],
                 'stage_timings': [],
-                'output_input_ratios': [],
                 'start_time': time.time(),
                 'stage_start_time': time.time(),
                 'is_finished': False,
-                'current_stage_requests': []
+                'current_stage_requests': [],
+                # New storage for individual request data
+                'stage_input_lengths': [],  # List of lists: each stage's input lengths
+                'stage_output_lengths': []  # List of lists: each stage's output lengths
             }
     
     def add_request_completion(self, collective_id: int, stage_id: int, 
@@ -210,16 +308,12 @@ class DeepResearchStructure:
                 expected_requests = 1
             
             if len(collective['current_stage_requests']) == expected_requests:
-                # Stage completed, calculate metrics
-                stage_input = sum(req[0] for req in collective['current_stage_requests'])
-                stage_output = sum(req[1] for req in collective['current_stage_requests'])
+                # Stage completed, store individual request data
+                stage_inputs = [req[0] for req in collective['current_stage_requests']]
+                stage_outputs = [req[1] for req in collective['current_stage_requests']]
                 
-                if stage_input > 0:
-                    ratio = stage_output / stage_input
-                else:
-                    ratio = 1.0
-                    
-                collective['output_input_ratios'].append(ratio)
+                collective['stage_input_lengths'].append(stage_inputs)
+                collective['stage_output_lengths'].append(stage_outputs)
                 collective['stage_timings'].append(time.time() - collective['stage_start_time'])
                 collective['completed_stages'] += 1
                 collective['current_stage_requests'] = []
@@ -253,23 +347,67 @@ class DeepResearchStructure:
                 
             collective = self.collective_requests[collective_id]
             
-            if not collective['output_input_ratios']:
+            if not collective['stage_input_lengths'] or not collective['stage_output_lengths']:
                 return None
                 
-            # Create vertices for each completed stage
-            vertices = [Vertex(1) for _ in range(len(collective['output_input_ratios']))]
+            vertices = []
+            edges = []
             
-            # Create edges with output/input ratios
-            edges = [Edge(ratio) for ratio in collective['output_input_ratios']]
-            
-            # Calculate total time and stage ratios
-            total_time = sum(collective['stage_timings'])
-            if total_time > 0:
-                stage_ratios = [t / total_time for t in collective['stage_timings']]
+            if self.use_all_node:
+                # All-node approach: each request becomes a node
+                for stage_idx in range(len(collective['stage_output_lengths'])):
+                    stage_vertices = []
+                    stage_edges = []
+                    
+                    stage_outputs = collective['stage_output_lengths'][stage_idx]
+                    stage_inputs = collective['stage_input_lengths'][stage_idx]
+                    
+                    # Create vertex for each request (weight = output length)
+                    for output_len in stage_outputs:
+                        stage_vertices.append(Vertex(output_len))
+                    
+                    # Create edge for each request (weight = input length)
+                    for input_len in stage_inputs:
+                        stage_edges.append(Edge(input_len))
+                        
+                    vertices.append(stage_vertices)
+                    edges.append(stage_edges)
             else:
-                stage_ratios = [1.0 / len(collective['stage_timings'])] * len(collective['stage_timings'])
+                # Super-node approach: one node per stage
+                for stage_idx in range(len(collective['stage_output_lengths'])):
+                    stage_outputs = collective['stage_output_lengths'][stage_idx]
+                    stage_inputs = collective['stage_input_lengths'][stage_idx]
+                    
+                    # Vertex weight = sum of output lengths in stage
+                    total_output = sum(stage_outputs)
+                    vertices.append([Vertex(total_output)])
+                    
+                    # Edge weight = sum of input lengths in stage
+                    total_input = sum(stage_inputs)
+                    edges.append([Edge(total_input)])
             
-            return Graph(vertices, edges, total_time, stage_ratios)
+            # Calculate stage ratios based on method
+            if self.stage_ratio_method == "execution_time" and collective['stage_timings']:
+                total_time = sum(collective['stage_timings'])
+                if total_time > 0:
+                    stage_ratios = [t / total_time for t in collective['stage_timings']]
+                else:
+                    stage_ratios = [1.0 / len(collective['stage_timings'])] * len(collective['stage_timings'])
+            elif self.stage_ratio_method == "output_length" and collective['stage_output_lengths']:
+                # Use max output length of each stage
+                stage_max_outputs = [max(stage_outputs) if stage_outputs else 0 
+                                   for stage_outputs in collective['stage_output_lengths']]
+                total_output = sum(stage_max_outputs)
+                if total_output > 0:
+                    stage_ratios = [max_out / total_output for max_out in stage_max_outputs]
+                else:
+                    stage_ratios = [1.0 / len(collective['stage_output_lengths'])] * len(collective['stage_output_lengths'])
+            else:
+                # Default uniform distribution
+                num_stages = len(collective['stage_output_lengths'])
+                stage_ratios = [1.0 / num_stages] * num_stages
+            
+            return Graph(vertices, edges, stage_ratios, self.use_all_node)
     
     def convert_to_unfinished_graph(self, collective_id: int, 
                                    input_length: int, 
@@ -280,31 +418,60 @@ class DeepResearchStructure:
                 return None
                 
             collective = self.collective_requests[collective_id]
-            
-            # Create vertices and edges for completed stages
             vertices = []
             edges = []
             
-            for i in range(len(collective['output_input_ratios'])):
-                vertices.append(Vertex(1))
-                edges.append(Edge(collective['output_input_ratios'][i]))
+            # Add completed stages
+            if self.use_all_node:
+                # All-node approach
+                for stage_idx in range(len(collective['stage_output_lengths'])):
+                    stage_vertices = []
+                    stage_edges = []
+                    
+                    stage_outputs = collective['stage_output_lengths'][stage_idx]
+                    stage_inputs = collective['stage_input_lengths'][stage_idx]
+                    
+                    for output_len in stage_outputs:
+                        stage_vertices.append(Vertex(output_len))
+                    for input_len in stage_inputs:
+                        stage_edges.append(Edge(input_len))
+                        
+                    vertices.append(stage_vertices)
+                    edges.append(stage_edges)
+                
+                # Add predicted stage
+                vertices.append([Vertex(predict_output_length)])
+                edges.append([Edge(input_length)])
+            else:
+                # Super-node approach
+                for stage_idx in range(len(collective['stage_output_lengths'])):
+                    stage_outputs = collective['stage_output_lengths'][stage_idx]
+                    stage_inputs = collective['stage_input_lengths'][stage_idx]
+                    
+                    total_output = sum(stage_outputs)
+                    total_input = sum(stage_inputs)
+                    
+                    vertices.append([Vertex(total_output)])
+                    edges.append([Edge(total_input)])
+                
+                # Add predicted stage
+                vertices.append([Vertex(predict_output_length)])
+                edges.append([Edge(input_length)])
             
-            # Add predicted stage
-            if input_length > 0:
-                vertices.append(Vertex(1))
-                edges.append(Edge(predict_output_length / input_length))
-            
-            return Graph(vertices, edges, 0, [])
+            return Graph(vertices, edges, None, self.use_all_node)
 
 
 def predict_stage_ratio(query_graph: Graph, graph_set) -> float:
     stage = len(query_graph.vertices) - 1
     best_graph: Graph | None = match_graph(query_graph, graph_set)
     
-    if best_graph is None:
+    if best_graph is None or best_graph.times is None:
         return Defalut_ToT_Requests_Pattern[stage] / sum(Defalut_ToT_Requests_Pattern)
     else:
-        return best_graph.stage_ratio[stage]
+        if stage < len(best_graph.times):
+            return best_graph.times[stage]
+        else:
+            return 1.0 / len(best_graph.vertices)
 
     
 def match_graph(query_graph, graph_set, alpha=0.5, beta=0.5, sigma_vertex=1.0, sigma_edge=1.0, graph_match=False) -> Graph:
@@ -341,39 +508,67 @@ def compute_similarity(query_graph: Graph, target_graph: Graph, alpha=0.5, beta=
     # Initialize similarity scores for vertices and edges
     vertex_score = 0
     edge_score = 0
+    
+    # Handle the new list-of-lists structure
+    query_vertices = []
+    query_edges = []
+    target_vertices = []
+    target_edges = []
+    
+    # Flatten vertices and edges for comparison
+    for stage_vertices in query_graph.vertices:
+        query_vertices.extend(stage_vertices)
+    for stage_edges in query_graph.edges:
+        query_edges.extend(stage_edges)
+    for stage_vertices in target_graph.vertices:
+        target_vertices.extend(stage_vertices)
+    for stage_edges in target_graph.edges:
+        target_edges.extend(stage_edges)
 
     # Match the graphs where DAG is undertermined
     if graph_match:
         # Compute vertex similarity
-        for v_q in query_graph.vertices:
+        for v_q in query_vertices:
             max_sim = 0
-            for v_g in target_graph.vertices:
+            for v_g in target_vertices:
                 sim = vertex_similarity(v_q, v_g, sigma_vertex)
                 max_sim = max(max_sim, sim)  # Select the maximum similarity for the vertex
             vertex_score += max_sim
 
         # Compute edge similarity
-        for e_q in query_graph.edges:
+        for e_q in query_edges:
             max_sim = 0
-            for e_g in target_graph.edges:
+            for e_g in target_edges:
                 sim = edge_similarity(e_q, e_g, sigma_edge)
                 max_sim = max(max_sim, sim)  # Select the maximum similarity for the edge
             edge_score += max_sim
     else:
-        for idx in range(len(query_graph.vertices)):
-            sim = vertex_similarity(query_graph.vertices[idx], target_graph.vertices[idx], sigma_vertex)
-            vertex_score += sim
-
-        # Compute edge similarity
-        for idx in range(len(query_graph.edges)):
-            sim = edge_similarity(query_graph.edges[idx], target_graph.edges[idx], sigma_edge)
-            edge_score += sim
+        # Stage-wise comparison when not using graph matching
+        min_stages = min(len(query_graph.vertices), len(target_graph.vertices))
+        
+        for stage_idx in range(min_stages):
+            q_stage_vertices = query_graph.vertices[stage_idx]
+            t_stage_vertices = target_graph.vertices[stage_idx]
+            q_stage_edges = query_graph.edges[stage_idx]
+            t_stage_edges = target_graph.edges[stage_idx]
+            
+            # Compare vertices in this stage
+            min_vertices = min(len(q_stage_vertices), len(t_stage_vertices))
+            for v_idx in range(min_vertices):
+                sim = vertex_similarity(q_stage_vertices[v_idx], t_stage_vertices[v_idx], sigma_vertex)
+                vertex_score += sim
+            
+            # Compare edges in this stage
+            min_edges = min(len(q_stage_edges), len(t_stage_edges))
+            for e_idx in range(min_edges):
+                sim = edge_similarity(q_stage_edges[e_idx], t_stage_edges[e_idx], sigma_edge)
+                edge_score += sim
 
     # Normalize scores by the number of vertices and edges in the query graph
-    if query_graph.vertices:
-        vertex_score /= len(query_graph.vertices)
-    if query_graph.edges:
-        edge_score /= len(query_graph.edges)
+    if query_vertices:
+        vertex_score /= len(query_vertices)
+    if query_edges:
+        edge_score /= len(query_edges)
 
     # Return the weighted combined similarity
     return alpha * vertex_score + beta * edge_score
@@ -384,18 +579,18 @@ def vertex_similarity(v1, v2, sigma):
     Compute similarity between two vertices using a Gaussian kernel.
     
     Args:
-        v1: The first vertex, expected to have an 'attr' attribute.
-        v2: The second vertex, expected to have an 'attr' attribute.
+        v1: The first vertex, expected to have a 'weight' attribute.
+        v2: The second vertex, expected to have a 'weight' attribute.
         sigma: The scale parameter for the Gaussian kernel.
 
     Returns:
         A similarity score between the two vertices.
     """
-    if not hasattr(v1, 'attr') or not hasattr(v2, 'attr'):
-        raise ValueError("Vertices must have 'attr' attribute for comparison.")
+    if not hasattr(v1, 'weight') or not hasattr(v2, 'weight'):
+        raise ValueError("Vertices must have 'weight' attribute for comparison.")
 
-    # Compute the absolute difference in vertex attributes
-    delta = abs(v1.attr - v2.attr)
+    # Compute the absolute difference in vertex weights (output lengths)
+    delta = abs(v1.weight - v2.weight)
     # Apply Gaussian kernel to convert difference into similarity
     return math.exp(-delta**2 / (2 * sigma**2))
 
@@ -436,11 +631,11 @@ def predict_deepresearch_stage_ratio(query_graph: Graph, graph_set,
     """
     best_graph = match_graph(query_graph, graph_set, graph_match=True)
     
-    if best_graph is None or stage_index >= len(best_graph.stage_ratio):
+    if best_graph is None or best_graph.times is None or stage_index >= len(best_graph.times):
         # Default fallback: assume uniform distribution
         return 1.0 / max(1, len(query_graph.vertices))
     else:
-        return best_graph.stage_ratio[stage_index]
+        return best_graph.times[stage_index]
 
 
 def is_tot_request(request_type: int) -> bool:

@@ -103,15 +103,17 @@ def calculate_deepresearch_metrics(
     ttft_values = []
     slo_met_collections = 0
     slo_met_requests = 0  # Track individual requests meeting SLO
+    slo_met_collections_requests = 0  # Track collections meeting SLO
     
     for collective_output in collective_outputs:
         if collective_output.success:
             collection_latencies.append(collective_output.total_latency)
             
-            # Check SLO for collection
+            # Check SLO for collection - not used for goodput calculation
             if slo_constraint and collective_output.total_latency <= slo_constraint[2] * len(collective_output.stage_outputs):
                 slo_met_collections += 1
-        
+                slo_met_collections_requests += sum(len(so.stage_outputs) for so in collective_output.stage_outputs)
+
         for stage_output in collective_output.stage_outputs:
             total_stages += 1
             if stage_output.success:
@@ -180,7 +182,7 @@ def calculate_deepresearch_metrics(
         slo_met_collections=slo_met_collections,
         slo_met_ratio=slo_met_collections / completed_collections if completed_collections > 0 else 0,
         slo_met_requests=slo_met_requests,
-        slo_goodput=slo_met_requests / dur_s if dur_s > 0 else 0,
+        slo_goodput=slo_met_collections_requests / dur_s if dur_s > 0 else 0,
         total_service_gain=total_service_gain,
     )
     
@@ -275,6 +277,71 @@ def print_deepresearch_results(metrics: DeepResearchMetrics) -> None:
     print(header_separator)
 
 
+def log_collective_lengths(
+    collective_outputs: List[CollectiveOutput],
+    tokenizer: PreTrainedTokenizerBase,
+    output_dir: str,
+    exp_setting: Dict[str, Any]
+) -> None:
+    """Log all input/output lengths of collective requests."""
+    
+    # Create output directory
+    full_lengths_dir = os.path.join(output_dir, "full_colltive_lengths")
+    os.makedirs(full_lengths_dir, exist_ok=True)
+    
+    # Create filename based on experiment settings
+    date_str = exp_setting.get("date", datetime.now().strftime("%Y%m%d-%H%M%S"))
+    policy = exp_setting.get("policy", "unknown")
+    arrival_rate = exp_setting.get("arrival_rate", 0)
+    filename = f"collective_lengths_{policy}_rate{arrival_rate}_{date_str}.json"
+    
+    output_path = os.path.join(full_lengths_dir, filename)
+    
+    # Collect all length information
+    length_data = {
+        "experiment_settings": exp_setting,
+        "collections": []
+    }
+    
+    for collection_idx, collective_output in enumerate(collective_outputs):
+        collection_data = {
+            "collection_id": collection_idx,
+            "success": collective_output.success,
+            "stages": []
+        }
+        
+        for stage_idx, stage_output in enumerate(collective_output.stage_outputs):
+            stage_data = {
+                "stage_id": stage_idx,
+                "requests": []
+            }
+            
+            for request_idx, request_output in enumerate(stage_output.stage_outputs):
+                # Calculate input and output lengths using tokenizer
+                input_tokens = len(tokenizer(request_output.request_input, add_special_tokens=True).input_ids) if request_output.request_input else 0
+                output_tokens = len(tokenizer(request_output.request_output, add_special_tokens=True).input_ids) if request_output.request_output else 0
+                
+                request_data = {
+                    "request_id": request_idx,
+                    "input_length": input_tokens,
+                    "output_length": output_tokens,
+                    "success": request_output.success,
+                    "stop_reason": request_output.stop_reason
+                }
+                
+                stage_data["requests"].append(request_data)
+            
+            collection_data["stages"].append(stage_data)
+        
+        length_data["collections"].append(collection_data)
+    
+    # Write to file
+    with open(output_path, 'w') as f:
+        json.dump(length_data, f, indent=2)
+    
+    print(f"Collective request lengths logged to: {output_path}")
+
+
 async def benchmark_deepresearch(
     api_url: str,
     base_url: str,
@@ -295,6 +362,8 @@ async def benchmark_deepresearch(
     max_output_len: int,
     slo_constraint: Tuple[float, float, float],
     penalty_factor: int,
+    seed: int = 42,
+    is_stream: bool = True,
 ):
     """Run DeepResearch benchmark."""
     
@@ -317,6 +386,7 @@ async def benchmark_deepresearch(
         logprobs=logprobs,
         best_of=best_of,
         ignore_eos=ignore_eos,
+        seed=seed,
     )
     
     # Run test
@@ -330,7 +400,7 @@ async def benchmark_deepresearch(
         api_url=api_url,
         model_name=model,
         penalty_factor=penalty_factor,
-        client_deadline=200,
+        client_deadline=600,
     )
     
     if not test_output.success:
@@ -352,9 +422,10 @@ async def benchmark_deepresearch(
         burst=burst,
         sampling_params=sampling_params,
         client_id=0,
-        client_deadline=200,
+        client_deadline=600,
         api_url=api_url,
         model_name=model,
+        is_stream=is_stream,
         pbar=pbar,
     )
     
@@ -374,7 +445,7 @@ async def benchmark_deepresearch(
     
     print_deepresearch_results(metrics)
     
-    return metrics
+    return metrics, collective_outputs
 
 
 def main(args: argparse.Namespace):
@@ -426,7 +497,7 @@ def main(args: argparse.Namespace):
     
     print("Experiment Setting: ", exp_setting)
     
-    asyncio.run(
+    results = asyncio.run(
         benchmark_deepresearch(
             api_url=api_url,
             base_url=base_url,
@@ -449,7 +520,19 @@ def main(args: argparse.Namespace):
             max_output_len=args.max_output_len,
             slo_constraint=slo_constraint,
             penalty_factor=args.penalty_factor,
+            seed=args.seed,
+            is_stream=args.is_stream,
         ))
+    
+    # If show_id_length is set, log the collective lengths
+    if args.show_id_length:
+        metrics, collective_outputs = results
+        log_collective_lengths(
+            collective_outputs=collective_outputs,
+            tokenizer=tokenizer,
+            output_dir="benchmark_results",
+            exp_setting=exp_setting
+        )
 
 
 if __name__ == '__main__':
@@ -472,7 +555,8 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="benchmarks/dataset/deepresearch_trace_filtered_8192.jsonl",
+        # default="benchmarks/dataset/deepresearch_trace_filtered_8192.jsonl",
+        default="benchmarks/dataset/test_deepresearch_llama3_maxout1024_filtered8192.jsonl",
         help="Path to the DeepResearch trace file.",
     )
     parser.add_argument(
@@ -489,8 +573,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--burst",
-        type=bool,
-        default=False,
+        choices=["True", "False"],
+        default="False",
         help="Specify to use burst request arrival pattern.",
     )
     parser.add_argument(
@@ -575,6 +659,23 @@ if __name__ == '__main__':
         default="50,90,95,99",
         help="Comma-separated list of percentiles for selected metrics.",
     )
+    parser.add_argument(
+        "--show-id-length",
+        action="store_true",
+        default=False,
+        help="Log all input/output lengths of collective requests to benchmark_results/full_colltive_lengths directory.",
+    )
+    parser.add_argument(
+        "--is-stream",
+        choices=["True", "False"],
+        default="True",
+        help="Whether to use streaming mode for requests (default: True)",
+    )
     
     args = parser.parse_args()
+    
+    # Convert string arguments to boolean
+    args.burst = args.burst == "True"
+    args.is_stream = args.is_stream == "True"
+    
     main(args)

@@ -73,8 +73,9 @@ class SequenceStatus(enum.IntEnum):
     # as a finished status.
     FINISHED_STOPPED = 3
     FINISHED_LENGTH_CAPPED = 4
-    FINISHED_ABORTED = 5
-    FINISHED_IGNORED = 6
+    FINISHED_TARGET_LENGTH = 5
+    FINISHED_ABORTED = 6
+    FINISHED_IGNORED = 7
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -86,6 +87,8 @@ class SequenceStatus(enum.IntEnum):
             finish_reason = "stop"
         elif status == SequenceStatus.FINISHED_LENGTH_CAPPED:
             finish_reason = "length"
+        elif status == SequenceStatus.FINISHED_TARGET_LENGTH:
+            finish_reason = "target_length"
         elif status == SequenceStatus.FINISHED_ABORTED:
             finish_reason = "abort"
         elif status == SequenceStatus.FINISHED_IGNORED:

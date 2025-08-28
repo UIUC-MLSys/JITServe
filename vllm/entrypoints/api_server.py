@@ -52,6 +52,8 @@ use_graph_matching = False
 graph_structure_type = "tot"  # "tot" or "deepresearch"
 graph_matching_mode = "online"  # "none", "static", "online", "precise"
 use_total_deadline = False
+use_all_node = False  # All-node vs super-node approach
+stage_ratio_method = "execution_time"  # "execution_time" or "output_length"
 collection_graph_set: Set[Graph] = set()
 collection_graph_unfinished_dict: Dict[int, ToTStructure] = dict()
 deepresearch_structure: Optional[DeepResearchStructure] = None
@@ -108,7 +110,7 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
             # Use graph matching for first stage
             if graph_structure_type == "tot":
                 if collection_id not in collection_graph_unfinished_dict:
-                    collection_graph_unfinished_dict[collection_id] = ToTStructure()
+                    collection_graph_unfinished_dict[collection_id] = ToTStructure(use_all_node=use_all_node, stage_ratio_method=stage_ratio_method)
                 tot_structure = collection_graph_unfinished_dict[collection_id]
                 if tot_structure.is_finished:
                     tot_structure.reset()
@@ -127,7 +129,7 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
         # Dynamic graph matching (current implementation)
         if graph_structure_type == "tot":
             if collection_id not in collection_graph_unfinished_dict:
-                collection_graph_unfinished_dict[collection_id] = ToTStructure()
+                collection_graph_unfinished_dict[collection_id] = ToTStructure(use_all_node=use_all_node, stage_ratio_method=stage_ratio_method)
             tot_structure = collection_graph_unfinished_dict[collection_id]
             if tot_structure.is_finished:
                 tot_structure.reset()
@@ -163,7 +165,9 @@ async def generate(request: Request) -> Response:
     request_info = request_dict.pop("request_info", {})
     stream = request_dict.pop("stream", False)
     client_id = request_dict.get("client_id", 0)
-    
+
+    logger.debug(f"stream: {stream}")
+
     # Extract target_output_length if provided by client
     target_output_length = request_dict.pop("target_output_length", None)
     
@@ -195,7 +199,7 @@ async def generate(request: Request) -> Response:
         if graph_structure_type == "tot":
             # Initialize ToT structure if needed
             if collection_id not in collection_graph_unfinished_dict:
-                collection_graph_unfinished_dict[collection_id] = ToTStructure()
+                collection_graph_unfinished_dict[collection_id] = ToTStructure(use_all_node=use_all_node, stage_ratio_method=stage_ratio_method)
             tot_structure = collection_graph_unfinished_dict[collection_id]
             if tot_structure.is_finished:
                 tot_structure.reset()
@@ -226,14 +230,19 @@ async def generate(request: Request) -> Response:
         request_output_length = 0
         async for request_output in results_generator:
             prompt = request_output.prompt
-            request_input_length += len(prompt)
+            request_input_length += len(request_output.prompt_token_ids)
             assert prompt is not None
             text_outputs = [
                 prompt + output.text for output in request_output.outputs
             ]
-            request_output_length += sum([len(output.text) for output in request_output.outputs])
+            request_output_length += sum([len(output.token_ids) for output in request_output.outputs])
+
+            # Get finish_reason from the first output (assuming single output)
+            finish_reason = request_output.outputs[0].finish_reason if request_output.outputs else None
+            
             ret = {"text": text_outputs, "ttft": request_output.ttft,
-                   "tbt": request_output.tbt, "service_gain": request_output.service_gain}
+                   "tbt": request_output.tbt, "service_gain": request_output.service_gain,
+                   "finish_reason": finish_reason}
             yield (json.dumps(ret) + "\0").encode("utf-8")
             
         # Track collection completion for graph learning (regardless of matching mode)
@@ -281,10 +290,13 @@ async def generate(request: Request) -> Response:
     assert final_output is not None
     prompt = final_output.prompt
     assert prompt is not None
-    
-    request_input_length = len(prompt)
-    request_output_length = sum([len(output.text) for output in final_output.outputs])
-    
+
+    # logger.debug(f"len(prompt)={len(prompt)};len(final_output.outputs[0].text)={len(final_output.outputs[0].text) if final_output.outputs else 0}")
+    # logger.debug(f"len(final_output.prompt_token_ids)={len(final_output.prompt_token_ids) if final_output.prompt_token_ids else 0}; len(final_output.outputs[0].token_ids)={len(final_output.outputs[0].token_ids) if final_output.outputs else 0}")
+
+    request_input_length = len(final_output.prompt_token_ids)
+    request_output_length = sum([len(output.token_ids) for output in final_output.outputs])
+
     # Track collection completion for graph learning (regardless of matching mode)
     if request_info.request_type == RequestType.COLLECTIVE:
         if graph_structure_type == "tot":
@@ -317,8 +329,13 @@ async def generate(request: Request) -> Response:
                     collection_graph_set.add(graph)
 
     text_outputs = [prompt + output.text for output in final_output.outputs]
+    
+    # Get finish_reason from the first output (assuming single output)
+    finish_reason = final_output.outputs[0].finish_reason if final_output.outputs else None
+    
     ret = {"text": text_outputs, "time": final_output.ttft,
-           "tbt": final_output.tbt, "service_gain": final_output.service_gain}
+           "tbt": final_output.tbt, "service_gain": final_output.service_gain,
+           "finish_reason": finish_reason}
     return JSONResponse(ret)
 
 
@@ -342,6 +359,8 @@ async def init_app(
     global graph_structure_type
     global graph_matching_mode
     global use_total_deadline
+    global use_all_node
+    global stage_ratio_method
     global deepresearch_structure
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
@@ -364,9 +383,13 @@ async def init_app(
     graph_structure_type = args.graph_structure_type
     graph_matching_mode = args.graph_matching_mode
     use_total_deadline = args.use_total_deadline
+    use_all_node = args.use_all_node
+    stage_ratio_method = args.stage_ratio_method
     logger.info(f"Graph structure type set to: {graph_structure_type}")
     logger.info(f"Graph matching mode set to: {graph_matching_mode}")
     logger.info(f"Use total deadline: {use_total_deadline}")
+    logger.info(f"Use all node: {use_all_node}")
+    logger.info(f"Stage ratio method: {stage_ratio_method}")
     
     # Override graph matching based on mode
     if graph_matching_mode == "none":
@@ -375,7 +398,7 @@ async def init_app(
     
     # Initialize DeepResearch structure if needed
     if graph_structure_type == "deepresearch":
-        deepresearch_structure = DeepResearchStructure()
+        deepresearch_structure = DeepResearchStructure(use_all_node, stage_ratio_method)
         logger.info("DeepResearch structure initialized")
         
     engine = (llm_engine
@@ -488,6 +511,16 @@ if __name__ == "__main__":
         "--use-total-deadline",
         action='store_true',
         help="Use total deadline instead of default structure ratio")
+    parser.add_argument(
+        "--use-all-node",
+        action='store_true',
+        help="Use all-node approach (each request becomes a node) instead of super-node approach (one node per stage)")
+    parser.add_argument(
+        "--stage-ratio-method",
+        type=str,
+        choices=["execution_time", "output_length"],
+        default="execution_time",
+        help="Method for calculating stage ratios: 'execution_time' uses actual timing, 'output_length' uses max output length per stage")
     parser.add_argument("--log-level", type=str, default="debug")
     parser = AsyncEngineArgs.add_cli_args(parser)
     args = parser.parse_args()

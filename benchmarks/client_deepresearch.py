@@ -3,6 +3,7 @@ import aiohttp
 import asyncio
 import json
 import numpy as np
+import pandas as pd
 import time
 import sys
 import traceback
@@ -54,6 +55,7 @@ class RequestOutput:
         # Debug properties
         self.success = False
         self.error = ""
+        self.stop_reason = ""
 
 
 class StageOutput:
@@ -135,6 +137,7 @@ async def send_single_request(
                             data = json.loads(part)
                             output.request_tbt = data.get("tbt", [])
                             output.request_service_gain = data.get("service_gain", 0)
+                            output.stop_reason = data.get("finish_reason", "")
                             generated_text = data.get("text", [""])[0]
                             if output.request_ttft == 0.0 and data.get("ttft") is not None:
                                 output.request_ttft = data["ttft"]
@@ -142,15 +145,12 @@ async def send_single_request(
                         data = json.loads(buffer)
                         output.request_tbt = data.get("tbt", [])
                         output.request_service_gain = data.get("service_gain", 0)
+                        output.stop_reason = data.get("finish_reason", "")
                         generated_text = data.get("text", [""])[0]
                         if output.request_ttft == 0.0 and data.get("ttft") is not None:
                             output.request_ttft = data["ttft"]
                     
-                    # Extract only the generated portion (remove the prompt)
-                    if generated_text.startswith(request_prompt):
-                        output.request_output = generated_text[len(request_prompt):]
-                    else:
-                        output.request_output = generated_text
+                    output.request_output = generated_text[len(request_prompt):]
                     
                     output.request_latency = time.perf_counter() - st
                     output.success = True
@@ -174,6 +174,7 @@ async def send_stage_requests(
     api_url: str,
     model_name: str,
     client_deadline: float = 200,
+    is_stream: bool = True,
 ) -> StageOutput:
     """Send all requests in a stage concurrently."""
     stage_output = StageOutput()
@@ -185,7 +186,7 @@ async def send_stage_requests(
     tasks = []
     for request in stage_requests:
         request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url)
-        tasks.append(send_single_request(request_info, model_name, client_deadline))
+        tasks.append(send_single_request(request_info, model_name, client_deadline, is_stream))
     
     # Execute all requests in the stage concurrently
     request_outputs = await asyncio.gather(*tasks)
@@ -206,6 +207,7 @@ async def send_deepresearch_collective_request(
     model_name: str,
     penalty_factor: int = 1,
     client_deadline: float = 200,
+    is_stream: bool = True,
     pbar: Optional[async_tqdm] = None,
 ) -> CollectiveOutput:
     """Send a DeepResearch collective request with multiple stages."""
@@ -236,7 +238,8 @@ async def send_deepresearch_collective_request(
             client_id,
             api_url,
             model_name,
-            client_deadline
+            client_deadline,
+            is_stream
         )
         
         collective_output.stage_outputs.append(stage_output)
@@ -275,11 +278,30 @@ async def get_request_generator(
     burst: bool = False,
 ) -> AsyncGenerator[DeepResearchCollectiveRequest, None]:
     """Generate collective requests with specified arrival pattern."""
-    for collective_request in collective_requests:
-        if not burst:
+    request_num = len(collective_requests)
+    
+    # if burst using the burst pattern
+    if burst:
+        print("Using BurstGPT pattern for DeepResearch collective requests.")
+        df = pd.read_csv('/home/jovyan/workspace/Concord/benchmarks/trace/BurstGPT_1.csv')
+        timestamps = df['Timestamp'].tolist()
+        baseline_timestamp = timestamps[99]
+        timestamps = [ts - baseline_timestamp for ts in timestamps[100:100 + request_num]]
+        original_req_rate = request_num * 1000 / timestamps[request_num - 1]
+        target_req_rate = 1 / poisson_lambda * 1000
+        timestamps = [int(timestamp * original_req_rate / target_req_rate) for timestamp in timestamps]
+        last_timestamp = 0
+
+        for collective_request, new_timestamp in zip(collective_requests, timestamps):
+            interval = (new_timestamp - last_timestamp) / 1000
+            last_timestamp = new_timestamp
+            await asyncio.sleep(interval)
+            yield collective_request
+    else:
+        for collective_request in collective_requests:
             interval = np.random.poisson(poisson_lambda) / 1000
             await asyncio.sleep(interval)
-        yield collective_request
+            yield collective_request
 
 
 async def deepresearch_client_simulator(
@@ -293,6 +315,7 @@ async def deepresearch_client_simulator(
     client_deadline: float,
     api_url: str,
     model_name: str,
+    is_stream: bool = True,
     pbar: Optional[async_tqdm] = None,
 ) -> List[CollectiveOutput]:
     """Execute the DeepResearch client to send collective requests."""
@@ -312,6 +335,7 @@ async def deepresearch_client_simulator(
                 model_name,
                 penalty_factor,
                 client_deadline,
+                is_stream,
                 pbar
             )
         )
