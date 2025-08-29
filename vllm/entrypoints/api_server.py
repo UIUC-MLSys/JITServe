@@ -35,6 +35,12 @@ from vllm.utils import (FlexibleArgumentParser, iterate_with_cancellation,
                         random_uuid)
 from vllm.version import __version__ as VLLM_VERSION
 
+# Import tokenizer utilities
+try:
+    from vllm.transformers_utils.tokenizer import get_tokenizer
+except ImportError:
+    from backend_request_func import get_tokenizer
+
 logger = init_logger("vllm.entrypoints.api_server")
 
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
@@ -46,6 +52,9 @@ use_prediction = False
 use_default_length = False
 prediction_model = None
 prediction_tokenizer = None
+
+# Generation tokenizer
+generation_tokenizer = None
 
 # Graph matching
 use_graph_matching = False
@@ -115,12 +124,12 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                 if tot_structure.is_finished:
                     tot_structure.reset()
                 unfinished_graph = tot_structure.convert_to_unfinished_graph(
-                    len(prompt), request_info.output_len)
+                    len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
                 return predict_stage_ratio(unfinished_graph, collection_graph_set)
             else:  # deepresearch
                 if deepresearch_structure is not None:
                     unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
-                        collection_id, len(prompt), request_info.output_len)
+                        collection_id, len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
                     if unfinished_graph is not None:
                         return predict_deepresearch_stage_ratio(
                             unfinished_graph, collection_graph_set, stage_id)
@@ -134,12 +143,12 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
             if tot_structure.is_finished:
                 tot_structure.reset()
             unfinished_graph = tot_structure.convert_to_unfinished_graph(
-                len(prompt), request_info.output_len)
+                len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
             return predict_stage_ratio(unfinished_graph, collection_graph_set)
         else:  # deepresearch
             if deepresearch_structure is not None:
                 unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
-                    collection_id, len(prompt), request_info.output_len)
+                    collection_id, len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
                 if unfinished_graph is not None:
                     return predict_deepresearch_stage_ratio(
                         unfinished_graph, collection_graph_set, stage_id)
@@ -194,7 +203,8 @@ async def generate(request: Request) -> Response:
     if request_info.request_type == RequestType.COLLECTIVE:
         collection_id = request_info.collection_id
         stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
-        
+        logger.info(f"stage_id: {stage_id}")
+
         # Initialize structures based on type
         if graph_structure_type == "tot":
             # Initialize ToT structure if needed
@@ -206,10 +216,12 @@ async def generate(request: Request) -> Response:
                 
         elif graph_structure_type == "deepresearch" and deepresearch_structure is not None:
             # Initialize DeepResearch collective if needed
-            num_stages = getattr(request_info, 'num_stages', Default_DeepResearch_Stage)
-            requests_per_stage = getattr(request_info, 'requests_per_stage', Default_DeepResearch_Requests_Pattern)
-            
-            if not deepresearch_structure.is_collective_finished(collection_id):
+            num_stages = request_dict.pop("num_stages", Default_DeepResearch_Stage)
+            requests_per_stage = request_dict.pop("requests_per_stage", Default_DeepResearch_Requests_Pattern)
+
+            logger.info(f"DeepResearch collective_id: {collection_id}, stages: {num_stages}, requests: {requests_per_stage}")
+
+            if not deepresearch_structure.is_collective_initialized(collection_id):
                 deepresearch_structure.initialize_collective(
                     collection_id, num_stages, requests_per_stage)
         
@@ -230,12 +242,12 @@ async def generate(request: Request) -> Response:
         request_output_length = 0
         async for request_output in results_generator:
             prompt = request_output.prompt
-            request_input_length += len(request_output.prompt_token_ids)
+            request_input_length = len(request_output.prompt_token_ids)
             assert prompt is not None
             text_outputs = [
                 prompt + output.text for output in request_output.outputs
             ]
-            request_output_length += sum([len(output.token_ids) for output in request_output.outputs])
+            request_output_length = sum([len(output.token_ids) for output in request_output.outputs])
 
             # Get finish_reason from the first output (assuming single output)
             finish_reason = request_output.outputs[0].finish_reason if request_output.outputs else None
@@ -250,10 +262,9 @@ async def generate(request: Request) -> Response:
             if graph_structure_type == "tot":
                 if collection_id in collection_graph_unfinished_dict:
                     tot_structure = collection_graph_unfinished_dict[collection_id]
-                    request_finished = getattr(request_output, 'finished', False)
                     collection_finish = tot_structure.add_length(
-                        request_input_length, request_output_length, request_finished)
-                    
+                        request_input_length, request_output_length)
+
                     if collection_finish:
                         # Only convert if we have valid data
                         if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
@@ -264,10 +275,9 @@ async def generate(request: Request) -> Response:
                 stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
                 # Ensure collective is initialized before adding completion
                 if collection_id in deepresearch_structure.collective_requests:
-                    request_finished = getattr(request_output, 'finished', False)
                     collection_finish = deepresearch_structure.add_request_completion(
                         collection_id, stage_id, request_input_length, 
-                        request_output_length, request_finished)
+                        request_output_length)
                 else:
                     collection_finish = False
                 
@@ -291,21 +301,18 @@ async def generate(request: Request) -> Response:
     prompt = final_output.prompt
     assert prompt is not None
 
-    # logger.debug(f"len(prompt)={len(prompt)};len(final_output.outputs[0].text)={len(final_output.outputs[0].text) if final_output.outputs else 0}")
-    # logger.debug(f"len(final_output.prompt_token_ids)={len(final_output.prompt_token_ids) if final_output.prompt_token_ids else 0}; len(final_output.outputs[0].token_ids)={len(final_output.outputs[0].token_ids) if final_output.outputs else 0}")
-
     request_input_length = len(final_output.prompt_token_ids)
     request_output_length = sum([len(output.token_ids) for output in final_output.outputs])
+    logger.info(f"Request input length: {request_input_length}, Request output length: {request_output_length}")
 
     # Track collection completion for graph learning (regardless of matching mode)
     if request_info.request_type == RequestType.COLLECTIVE:
         if graph_structure_type == "tot":
             if collection_id in collection_graph_unfinished_dict:
                 tot_structure = collection_graph_unfinished_dict[collection_id]
-                request_finished = getattr(final_output, 'finished', False)
                 collection_finish = tot_structure.add_length(
-                    request_input_length, request_output_length, request_finished)
-                
+                    request_input_length, request_output_length)
+
                 if collection_finish:
                     # Only convert if we have valid data
                     if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
@@ -316,10 +323,9 @@ async def generate(request: Request) -> Response:
             stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
             # Ensure collective is initialized before adding completion
             if collection_id in deepresearch_structure.collective_requests:
-                request_finished = getattr(final_output, 'finished', False)
                 collection_finish = deepresearch_structure.add_request_completion(
                     collection_id, stage_id, request_input_length, 
-                    request_output_length, request_finished)
+                    request_output_length)
             else:
                 collection_finish = False
             
@@ -362,6 +368,7 @@ async def init_app(
     global use_all_node
     global stage_ratio_method
     global deepresearch_structure
+    global generation_tokenizer
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.max_model_len = 8192 #32768
@@ -395,6 +402,10 @@ async def init_app(
     if graph_matching_mode == "none":
         use_graph_matching = False
         logger.info("Graph matching disabled by mode")
+    
+    # Initialize generation tokenizer
+    generation_tokenizer = get_tokenizer(args.model)
+    logger.info(f"Generation tokenizer initialized for model: {args.model}")
     
     # Initialize DeepResearch structure if needed
     if graph_structure_type == "deepresearch":

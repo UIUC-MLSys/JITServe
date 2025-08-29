@@ -46,6 +46,11 @@ class RequestInfo:
         input_len: int,  # The input length for the request
         output_len: int,  # The expected output length for the request
         prediction_task: asyncio.Task = None,  # Task for prediction
+        prompt: str = "",  # The prompt text for the request
+        output: str = "",  # The output text for the request
+        stage_id: int = 0,  # Stage ID for collective requests
+        request_id: int = 0,  # Request ID within a stage
+        state: str = "",  # State information for the request
     ):
         # Initialize the attributes with the provided values
         self.request_type = request_type
@@ -60,6 +65,11 @@ class RequestInfo:
                     request_type == RequestType.LATENCY else RequestTypeWeight.LOW
         self.prediction_task = prediction_task
         self.real_output_len = output_len
+        self.prompt = prompt
+        self.output = output
+        self.stage_id = stage_id
+        self.request_id = request_id
+        self.state = state
 
     @classmethod
     def from_json(cls, json_obj: Dict[str, Any]) -> "RequestInfo":
@@ -80,7 +90,31 @@ class RequestInfo:
         collection_id = json_obj["collection_id"]
         deadline = json_obj["deadline"]
         output_len = json_obj["output_len"]
-        input_len = json_obj["prompt_len"]
+        input_len = json_obj.get("prompt_len", json_obj.get("input_len", 0))  # Support both field names
+        prompt = json_obj.get("prompt", "")
+        output = json_obj.get("output", "")
+        stage_id = json_obj.get("stage_id", 0)
+        request_id = json_obj.get("request_id", 0)
+        state = json_obj.get("state", "")
         
         # Return a new instance of RequestInfo with the extracted values
-        return cls(request_type, slo_constraint, client_id, collection_id, deadline, input_len, output_len)
+        return cls(request_type, slo_constraint, client_id, collection_id, deadline, input_len, output_len,
+                  None, prompt, output, stage_id, request_id, state)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert RequestInfo to dictionary format."""
+        return {
+            'prompt': self.prompt,
+            'output': self.output,
+            'prompt_len': self.input_len,
+            'input_len': self.input_len,
+            'output_len': self.output_len,
+            'request_type': self.request_type.value,
+            'collection_id': self.collection_id,
+            'stage_id': self.stage_id,
+            'request_id': self.request_id,
+            'state': self.state,
+            'deadline': self.deadline,
+            'slo_constraint': self.slo_constraint,
+            'client_id': self.client_id,
+        }

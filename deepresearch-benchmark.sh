@@ -5,20 +5,22 @@ export HF_TOKEN=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
 # 定义测试参数组合
 test_cases=(
     # bs arrival_rate penalty_factor slo_constraint num_prompts use_all_node stage_ratio_method
+    # "32 0.33 1 2,0.1,20 594 true output_length"
     "32 0.33 1 2,0.1,20 594 false output_length"
-    "32 0.33 1 2,0.1,20 594 true output_length"
-    "32 0.33 1 2,0.1,20 594 false execution_time"
-    "32 0.33 1 2,0.1,20 594 true execution_time"
+    # "32 0.33 1 2,0.1,20 594 false execution_time"
+    # "32 0.33 1 2,0.1,20 594 true execution_time"
+    # "32 0.5 1 2,0.1,20 5 false output_length" # test
+    # "32 0.5 1 2,0.1,20 5 true output_length" # test
 )
 
 policies=(
     # "fcfs"
-    "concord-default-structure"
-    "concord-total-deadline-no-graph"
-    "concord-static-default-structure"
-    "concord-static-total-deadline"
     "concord-online-graph"
-    "concord-precise"
+    # "concord-default-structure"
+    # "concord-total-deadline-no-graph"
+    # "concord-static-default-structure"
+    # "concord-static-total-deadline"
+    # "concord-precise"
 )
 output_dir="benchmark_results"
 model="meta-llama/Llama-3.1-8B-Instruct"

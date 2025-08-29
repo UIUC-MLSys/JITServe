@@ -33,21 +33,21 @@ def construct_graph_set(datas, times, ratios):
     assert len(datas) == len(ratios)
     graph_set = set()
     for entry, time, ratio in zip(datas, times, ratios):
-        vertices = []
+        nodes = []
         edges = []
         for node in entry:
-            vertices.append(Vertex(1))
+            nodes.append(Vertex(1))
             edges.append(Edge(node))
-        graph_set.add(Graph(vertices=vertices, edges=edges, total_time=time, stage_ratio=ratio))
+        graph_set.add(Graph(nodes=nodes, edges=edges, total_time=time, stage_ratio=ratio))
     return graph_set
 
 def match_graph_set(stages_train_set: set[Graph], stages_test_set: set[Graph]):
     entry_match_results = []
     for entry in stages_test_set:
         matched_graphs = []
-        for stage_idx in range(len(entry.vertices)-1):
+        for stage_idx in range(len(entry.nodes)-1):
             new_graph = Graph(
-                vertices=entry.vertices[:stage_idx + 1],
+                nodes=entry.nodes[:stage_idx + 1],
                 edges=entry.edges[:stage_idx + 1],
                 total_time=entry.total_time,
                 stage_ratio=entry.stage_ratio,
