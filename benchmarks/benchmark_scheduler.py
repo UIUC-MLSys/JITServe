@@ -32,7 +32,8 @@ except ImportError:
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, TaskOutput,
-                              RequestOutput, Trace, RequestFormat, BaseDataset, RequestType)
+                              RequestOutput, Trace, BaseDataset, RequestType)
+from vllm.request_info import RequestInfo
 
 @dataclass
 class BenchmarkMetrics:
@@ -407,7 +408,7 @@ async def benchmark(
     base_url: str,
     model: str,
     tokenizer: PreTrainedTokenizerBase,
-    trace: List[RequestFormat],
+    trace: List[RequestInfo],
     logprobs: Optional[int],
     num_prompts: int,
     n: int,
@@ -434,7 +435,7 @@ async def benchmark(
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
-    test_request: RequestFormat = requests[0]
+    test_request: RequestInfo = requests[0]
     sampling_params = SamplingParams(
         n=n,              
         temperature=0.0,
@@ -547,7 +548,7 @@ def main(args: argparse.Namespace):
 
     model_id = args.model
     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
-    trace: List[RequestFormat] = Trace.load_trace(args.trace_path)
+    trace: List[RequestInfo] = Trace.load_trace(args.trace_path)
 
     if args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"

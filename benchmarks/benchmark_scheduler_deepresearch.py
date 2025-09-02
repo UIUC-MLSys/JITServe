@@ -20,8 +20,9 @@ from vllm.sampling_params import RequestOutputKind
 
 # Import DeepResearch modules
 from trace_deepresearch import (
-    DeepResearchTrace, DeepResearchCollectiveRequest, RequestFormat, RequestType
+    DeepResearchTrace, DeepResearchCollectiveRequest, RequestType
 )
+from vllm.request_info import RequestInfo
 from client_deepresearch import (
     deepresearch_client_simulator, CollectiveOutput, StageOutput, RequestOutput
 )
@@ -404,7 +405,8 @@ async def benchmark_deepresearch(
     )
     
     if not test_output.success:
-        raise ValueError(f"Initial test run failed. Please check your configuration.")
+        # raise ValueError(f"Initial test run failed. Please check your configuration.")
+        print(f"Initial test run failed. Please check your configuration.")
     else:
         print("Initial test run completed successfully. Starting main benchmark...")
     

@@ -11,12 +11,13 @@ from copy import deepcopy
 from tqdm import tqdm
 from typing import List, Tuple, AsyncGenerator, Optional
 from vllm import SamplingParams
-from .trace import RequestFormat, RequestType
+from .trace import RequestType
+from vllm.request_info import RequestInfo
 
 class RequestInput:
     def __init__(
         self, 
-        request: RequestFormat,
+        request: RequestInfo,
         slo_constraint: Tuple[float, float, float],
         sampling_params: SamplingParams,
         client_id: int,
@@ -93,10 +94,10 @@ def parse_output(output: str, input_length: int) -> str:
 
 
 async def get_request(
-    input_requests: List[RequestFormat],
+    input_requests: List[RequestInfo],
     poisson_lambda: float = 1000.0,
     burst: bool = False,
-) -> AsyncGenerator[RequestFormat, None]:
+) -> AsyncGenerator[RequestInfo, None]:
     request_num = len(input_requests)
     input_requests = iter(input_requests)
     
@@ -438,7 +439,7 @@ async def send_request(
 
 
 async def client_simulator(
-    input_requests: List[RequestFormat], 
+    input_requests: List[RequestInfo], 
     slo_constraint: Tuple[float, float, float],
     penalty_factor: int,
     poisson_lambda: float,

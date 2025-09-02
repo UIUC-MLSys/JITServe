@@ -13,25 +13,30 @@ from tqdm.asyncio import tqdm as async_tqdm
 from vllm import SamplingParams
 
 from trace_deepresearch import (
-    RequestFormat, RequestType, DeepResearchCollectiveRequest,
+    RequestType, DeepResearchCollectiveRequest,
     DeepResearchStage, DeepResearchRequest
 )
+from vllm.request_info import RequestInfo
 
 
 class RequestInput:
     def __init__(
         self, 
-        request: RequestFormat,
+        request: RequestInfo,
         slo_constraint: Tuple[float, float, float],
         sampling_params: SamplingParams,
         client_id: int,
-        api_url: str
+        api_url: str,
+        num_stages: int = 0,
+        requests_per_stage: List[int] = None
     ):
         self.request = request
         self.slo_constraint = slo_constraint
         self.sampling_params = sampling_params
         self.client_id = client_id
         self.api_url = api_url
+        self.num_stages = num_stages
+        self.requests_per_stage = requests_per_stage or []
 
 
 class RequestOutput:
@@ -111,6 +116,8 @@ async def send_single_request(
             "client_id": request_info.client_id,
             "stream": is_stream,
             "target_output_length": request_info.request.output_len,
+            "num_stages": request_info.num_stages,
+            "requests_per_stage": request_info.requests_per_stage,
         }
         
         # Update the prompt in the payload
@@ -167,7 +174,7 @@ async def send_single_request(
 
 
 async def send_stage_requests(
-    stage_requests: List[RequestFormat],
+    stage_requests: List[RequestInfo],
     slo_constraint: Tuple[float, float, float],
     sampling_params: SamplingParams,
     client_id: int,
@@ -175,6 +182,8 @@ async def send_stage_requests(
     model_name: str,
     client_deadline: float = 200,
     is_stream: bool = True,
+    num_stages: int = 0,
+    requests_per_stage: List[int] = None,
 ) -> StageOutput:
     """Send all requests in a stage concurrently."""
     stage_output = StageOutput()
@@ -185,7 +194,10 @@ async def send_stage_requests(
     # Create tasks for all requests in the stage
     tasks = []
     for request in stage_requests:
-        request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url)
+        request_info = RequestInput(
+            request, slo_constraint, sampling_params, client_id, api_url, 
+            num_stages, requests_per_stage or []
+        )
         tasks.append(send_single_request(request_info, model_name, client_deadline, is_stream))
     
     # Execute all requests in the stage concurrently
@@ -216,11 +228,14 @@ async def send_deepresearch_collective_request(
     
     st = time.perf_counter()
     
-    # Convert to RequestFormat objects
-    all_requests = collective_request.to_request_formats()
+    # Get stage structure information
+    num_stages, requests_per_stage = collective_request.get_stage_structure()
+    
+    # Convert to RequestInfo objects
+    all_requests = collective_request.to_request_infos()
     
     # Group requests by stage
-    stages_dict: Dict[int, List[RequestFormat]] = {}
+    stages_dict: Dict[int, List[RequestInfo]] = {}
     for request in all_requests:
         if request.stage_id not in stages_dict:
             stages_dict[request.stage_id] = []
@@ -239,7 +254,9 @@ async def send_deepresearch_collective_request(
             api_url,
             model_name,
             client_deadline,
-            is_stream
+            is_stream,
+            num_stages,
+            requests_per_stage
         )
         
         collective_output.stage_outputs.append(stage_output)
