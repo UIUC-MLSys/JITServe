@@ -953,7 +953,7 @@ class SequenceGroup:
         decode_len = self.first_seq.get_output_len()
         
         prefill_weight = 1
-        decode_weight = 2
+        decode_weight = 8
     
         generated_prefill_tokens = self.concord_metrics.new_prefill_tokens
         generated_decode_tokens = self.concord_metrics.new_decode_tokens

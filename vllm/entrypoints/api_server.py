@@ -25,7 +25,8 @@ from vllm.entrypoints.launcher import serve_http
 from vllm.graph.similarity import (Graph, ToTStructure, DeepResearchStructure, 
                                       predict_stage_ratio, predict_deepresearch_stage_ratio,
                                       is_tot_request, is_deepresearch_request,
-                                      Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern)
+                                      Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern,
+                                      DynamicClustering)
 from vllm.logger import init_logger
 from vllm.prediction.prediction import load_model, async_predict
 from vllm.request_info import RequestInfo, RequestType
@@ -63,9 +64,10 @@ graph_matching_mode = "online"  # "none", "static", "online", "precise"
 use_total_deadline = False
 use_all_node = False  # All-node vs super-node approach
 stage_ratio_method = "execution_time"  # "execution_time" or "output_length"
-collection_graph_set: Set[Graph] = set()
+collection_graph_set: Set[Graph] = set()  # Keep for backward compatibility
+dynamic_clustering = DynamicClustering()  # New clustering system for allnode method
 collection_graph_unfinished_dict: Dict[int, ToTStructure] = dict()
-deepresearch_structure: Optional[DeepResearchStructure] = None
+collection_deepresearch_unfinished_dict: Dict[int, DeepResearchStructure] = dict()
 
 def send_request_to_prediction(connection: socket.socket, request_info: RequestInfo, prompt):
     try:
@@ -94,8 +96,8 @@ def send_and_update_request_info(request_info: RequestInfo, prompt: str):
 
 def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id: int, stage_id: int = 0) -> float:
     """Calculate stage ratio based on graph matching mode and structure type."""
-    global graph_matching_mode, graph_structure_type, use_total_deadline
-    global collection_graph_set, collection_graph_unfinished_dict, deepresearch_structure
+    global graph_matching_mode, graph_structure_type, use_total_deadline, use_all_node
+    global collection_graph_set, dynamic_clustering, collection_graph_unfinished_dict, collection_deepresearch_unfinished_dict
     
     # Default ratios based on structure type
     if graph_structure_type == "tot":
@@ -112,7 +114,8 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
         return default_ratio
     elif graph_matching_mode == "precise":
         # Oracle knowledge - return optimal ratio (for now, use default)
-        return default_ratio
+        if graph_structure_type == "deepresearch":
+            return default_ratio
     elif graph_matching_mode == "static":
         # First stage matching only
         if stage_id == 0:
@@ -125,14 +128,40 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                     tot_structure.reset()
                 unfinished_graph = tot_structure.convert_to_unfinished_graph(
                     len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-                return predict_stage_ratio(unfinished_graph, collection_graph_set)
+                if use_all_node:
+                    # Use dynamic clustering for allnode method
+                    best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                    if best_match and best_match.times:
+                        stage = len(unfinished_graph.nodes)
+                        if stage < len(best_match.times):
+                            return sum(best_match.times[:stage]) / sum(best_match.times)
+                        else:
+                            return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+                    else:
+                        return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
+                else:
+                    return predict_stage_ratio(unfinished_graph, collection_graph_set)
             else:  # deepresearch
-                if deepresearch_structure is not None:
-                    unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
-                        collection_id, len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-                    if unfinished_graph is not None:
-                        return predict_deepresearch_stage_ratio(
-                            unfinished_graph, collection_graph_set, stage_id)
+                if collection_id not in collection_deepresearch_unfinished_dict:
+                    collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
+                        Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern, use_all_node, stage_ratio_method)
+                deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
+                if deepresearch_structure.is_finished:
+                    deepresearch_structure.reset()
+                unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
+                    len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
+                if use_all_node:
+                    # Use dynamic clustering for allnode method
+                    best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                    if best_match and best_match.times and stage_id < len(best_match.times):
+                        ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
+                        ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                        return max(ratio_1, ratio_2)
+                    else:
+                        return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                else:
+                    return predict_deepresearch_stage_ratio(
+                        unfinished_graph, collection_graph_set, stage_id)
         return default_ratio
     elif graph_matching_mode == "online":
         # Dynamic graph matching (current implementation)
@@ -144,14 +173,40 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                 tot_structure.reset()
             unfinished_graph = tot_structure.convert_to_unfinished_graph(
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-            return predict_stage_ratio(unfinished_graph, collection_graph_set)
+            if use_all_node:
+                # Use dynamic clustering for allnode method
+                best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                if best_match and best_match.times:
+                    stage = len(unfinished_graph.nodes)
+                    if stage < len(best_match.times):
+                        return sum(best_match.times[:stage]) / sum(best_match.times)
+                    else:
+                        return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+                else:
+                    return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
+            else:
+                return predict_stage_ratio(unfinished_graph, collection_graph_set)
         else:  # deepresearch
-            if deepresearch_structure is not None:
-                unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
-                    collection_id, len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-                if unfinished_graph is not None:
-                    return predict_deepresearch_stage_ratio(
-                        unfinished_graph, collection_graph_set, stage_id)
+            if collection_id not in collection_deepresearch_unfinished_dict:
+                collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
+                    Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern, use_all_node, stage_ratio_method)
+            deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
+            if deepresearch_structure.is_finished:
+                deepresearch_structure.reset()
+            unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
+                len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
+            if use_all_node:
+                # Use dynamic clustering for allnode method
+                best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                if best_match and best_match.times and stage_id < len(best_match.times):
+                    ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
+                    ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                    return max(ratio_1, ratio_2)
+                else:
+                    return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+            else:
+                return predict_deepresearch_stage_ratio(
+                    unfinished_graph, collection_graph_set, stage_id)
     
     return default_ratio
 
@@ -214,17 +269,20 @@ async def generate(request: Request) -> Response:
             if tot_structure.is_finished:
                 tot_structure.reset()
                 
-        elif graph_structure_type == "deepresearch" and deepresearch_structure is not None:
-            # Initialize DeepResearch collective if needed
+        elif graph_structure_type == "deepresearch":
+            # Initialize DeepResearch structure if needed
             num_stages = request_dict.pop("num_stages", Default_DeepResearch_Stage)
             requests_per_stage = request_dict.pop("requests_per_stage", Default_DeepResearch_Requests_Pattern)
 
             logger.info(f"DeepResearch collective_id: {collection_id}, stages: {num_stages}, requests: {requests_per_stage}")
 
-            if not deepresearch_structure.is_collective_initialized(collection_id):
-                deepresearch_structure.initialize_collective(
-                    collection_id, num_stages, requests_per_stage)
-        
+            if collection_id not in collection_deepresearch_unfinished_dict:
+                collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
+                    num_stages, requests_per_stage, use_all_node, stage_ratio_method)
+            deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
+            if deepresearch_structure.is_finished:
+                deepresearch_structure.reset()
+
         # Calculate stage ratio based on matching mode and structure
         if use_graph_matching or graph_matching_mode != "none":
             stage_ratio = calculate_stage_ratio(request_info, prompt, collection_id, stage_id)
@@ -268,23 +326,26 @@ async def generate(request: Request) -> Response:
                     if collection_finish:
                         # Only convert if we have valid data
                         if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
-                            collection_graph_set.add(tot_structure.convert_to_graph())
+                            finished_graph = tot_structure.convert_to_graph()
+                            collection_graph_set.add(finished_graph)
+                            if use_all_node:
+                                dynamic_clustering.add_finished_request(finished_graph)
                         tot_structure.is_finished = True
                         
-            elif graph_structure_type == "deepresearch" and deepresearch_structure is not None:
-                stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
-                # Ensure collective is initialized before adding completion
-                if collection_id in deepresearch_structure.collective_requests:
-                    collection_finish = deepresearch_structure.add_request_completion(
-                        collection_id, stage_id, request_input_length, 
-                        request_output_length)
-                else:
-                    collection_finish = False
-                
-                if collection_finish:
-                    graph = deepresearch_structure.convert_to_graph(collection_id)
-                    if graph is not None:
-                        collection_graph_set.add(graph)
+            elif graph_structure_type == "deepresearch":
+                if collection_id in collection_deepresearch_unfinished_dict:
+                    deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
+                    collection_finish = deepresearch_structure.add_length(
+                        request_input_length, request_output_length)
+                    
+                    if collection_finish:
+                        # Only convert if we have valid data
+                        if deepresearch_structure.stage_in_out_lengths and deepresearch_structure.stage_timings:
+                            finished_graph = deepresearch_structure.convert_to_graph()
+                            collection_graph_set.add(finished_graph)
+                            if use_all_node:
+                                dynamic_clustering.add_finished_request(finished_graph)
+                        deepresearch_structure.is_finished = True
 
     if stream:
         return StreamingResponse(stream_results())
@@ -316,23 +377,26 @@ async def generate(request: Request) -> Response:
                 if collection_finish:
                     # Only convert if we have valid data
                     if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
-                        collection_graph_set.add(tot_structure.convert_to_graph())
+                        finished_graph = tot_structure.convert_to_graph()
+                        collection_graph_set.add(finished_graph)
+                        if use_all_node:
+                            dynamic_clustering.add_finished_request(finished_graph)
                     tot_structure.is_finished = True
                     
-        elif graph_structure_type == "deepresearch" and deepresearch_structure is not None:
-            stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
-            # Ensure collective is initialized before adding completion
-            if collection_id in deepresearch_structure.collective_requests:
-                collection_finish = deepresearch_structure.add_request_completion(
-                    collection_id, stage_id, request_input_length, 
-                    request_output_length)
-            else:
-                collection_finish = False
-            
-            if collection_finish:
-                graph = deepresearch_structure.convert_to_graph(collection_id)
-                if graph is not None:
-                    collection_graph_set.add(graph)
+        elif graph_structure_type == "deepresearch":
+            if collection_id in collection_deepresearch_unfinished_dict:
+                deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
+                collection_finish = deepresearch_structure.add_length(
+                    request_input_length, request_output_length)
+                
+                if collection_finish:
+                    # Only convert if we have valid data
+                    if deepresearch_structure.stage_in_out_lengths and deepresearch_structure.stage_timings:
+                        finished_graph = deepresearch_structure.convert_to_graph()
+                        collection_graph_set.add(finished_graph)
+                        if use_all_node:
+                            dynamic_clustering.add_finished_request(finished_graph)
+                    deepresearch_structure.is_finished = True
 
     text_outputs = [prompt + output.text for output in final_output.outputs]
     
@@ -367,7 +431,6 @@ async def init_app(
     global use_total_deadline
     global use_all_node
     global stage_ratio_method
-    global deepresearch_structure
     global generation_tokenizer
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
@@ -406,11 +469,6 @@ async def init_app(
     # Initialize generation tokenizer
     generation_tokenizer = get_tokenizer(args.model)
     logger.info(f"Generation tokenizer initialized for model: {args.model}")
-    
-    # Initialize DeepResearch structure if needed
-    if graph_structure_type == "deepresearch":
-        deepresearch_structure = DeepResearchStructure(use_all_node, stage_ratio_method)
-        logger.info("DeepResearch structure initialized")
         
     engine = (llm_engine
               if llm_engine is not None else AsyncLLMEngine.from_engine_args(

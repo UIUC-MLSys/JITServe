@@ -5,21 +5,32 @@ export HF_TOKEN=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
 # 定义测试参数组合
 test_cases=(
     # bs arrival_rate penalty_factor slo_constraint num_prompts use_all_node stage_ratio_method
-    # "32 0.33 1 2,0.1,20 594 true output_length"
-    "32 0.33 1 2,0.1,20 594 false output_length"
+    # "32 0.33 100 2,0.1,20 594 true output_length"
+    # "32 0.33 100 2,0.1,20 594 false output_length"
+    "32 0.34 100 2,0.1,20 594 true output_length"
+    # "32 0.34 100 2,0.1,20 594 false output_length"
+    # "32 0.35 100 2,0.1,20 594 true output_length"
+    # "32 0.35 100 2,0.1,20 594 false output_length"
+    "32 0.36 100 2,0.1,20 594 true output_length"
+    # "32 0.37 100 2,0.1,20 594 true output_length"
+    "32 0.38 100 2,0.1,20 594 true output_length"
+    # "32 0.36 100 2,0.1,20 594 false output_length"
     # "32 0.33 1 2,0.1,20 594 false execution_time"
     # "32 0.33 1 2,0.1,20 594 true execution_time"
-    # "32 0.5 1 2,0.1,20 5 false output_length" # test
-    # "32 0.5 1 2,0.1,20 5 true output_length" # test
+    # "32 0.5 100 2,0.1,20 200 true output_length" # test
+    # "16 0.35 100 2,0.1,20 200 true output_length"
+    # "32 0.5 100 2,0.1,20 200 false output_length" # test
+    # "16 0.35 100 2,0.1,20 200 false output_length"
+    # "16 0.36 100 2,0.1,20 5 true output_length"
 )
 
 policies=(
-    # "fcfs"
+    "fcfs"
     "concord-online-graph"
     # "concord-default-structure"
-    # "concord-total-deadline-no-graph"
-    # "concord-static-default-structure"
-    # "concord-static-total-deadline"
+    "concord-total-deadline-no-graph"
+    # # "concord-static-default-structure"
+    "concord-static-total-deadline"
     # "concord-precise"
 )
 output_dir="benchmark_results"
@@ -47,6 +58,12 @@ for test_case in "${test_cases[@]}"; do
     read -r bs arrival_rate penalty_factor slo_constraint num_prompts use_all_node stage_ratio_method <<< "$test_case"
     
     for policy in "${policies[@]}"; do
+        # Skip supernode method for fcfs policy
+        if [ "$policy" = "fcfs" ] && [ "$use_all_node" = "false" ]; then
+            echo "跳过 fcfs 策略的 supernode 方法"
+            continue
+        fi
+        
         echo -e "\n========================================"
         echo "开始测试：策略=$policy, 批次大小=$bs, 速率=$arrival_rate"
         echo "惩罚因子=$penalty_factor, SLO约束=$slo_constraint, 提示数=$num_prompts"
@@ -123,6 +140,7 @@ for test_case in "${test_cases[@]}"; do
         elif [ "$policy" = "concord-online-graph" ]; then
             python3 -m vllm.entrypoints.api_server \
                 --scheduling-policy "concord" \
+                --disable-prediction \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
                 --max-num-seqs "$bs" \
@@ -165,8 +183,8 @@ for test_case in "${test_cases[@]}"; do
         else
             node_type="supernode"
         fi
-        
-        output_file="${output_dir}/deepresearch_rate${arrival_rate}_${policy}_${node_type}_${stage_ratio_method}.log"
+
+        output_file="${output_dir}/deepresearch_bs_${bs}_penalty_${penalty_factor}_rate${arrival_rate}_${policy}_${node_type}_${stage_ratio_method}.log"
         python3 benchmarks/benchmark_scheduler_deepresearch.py \
             --model "$model" \
             --policy "$policy" \

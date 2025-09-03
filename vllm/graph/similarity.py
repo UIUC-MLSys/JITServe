@@ -1,6 +1,7 @@
 import math
 import time
 import threading
+import random
 from itertools import permutations
 from typing import List, Dict, Any, Optional, Tuple
 from vllm.logger import init_logger
@@ -195,199 +196,169 @@ class DeepResearchStructure:
     Unlike ToT which has a fixed pattern, DeepResearch can have varying numbers
     of stages and requests per stage.
     """
-    def __init__(self, use_all_node: bool = False, stage_ratio_method: str = "execution_time") -> None:
-        self.collective_requests: Dict[int, Dict[str, Any]] = {}
-        self.current_time = time.time()
+    def __init__(self, 
+                 num_stages: int = Default_DeepResearch_Stage,
+                 requests_per_stage: List[int] = Default_DeepResearch_Requests_Pattern,
+                 use_all_node: bool = False, 
+                 stage_ratio_method: str = "execution_time") -> None:
+        self.num_stages = num_stages
+        self.requests_per_stage = requests_per_stage
         self.use_all_node = use_all_node
         self.stage_ratio_method = stage_ratio_method
+        
+        # Store individual request data for all-node approach
+        self.stage_in_out_lengths: List[List[tuple]] = []  # List of (input_len, output_len) tuples per stage
+        self.current_stage_requests: List[tuple] = []  # (input_len, output_len)
+        
+        self.current_time = time.time()
+        self.stage_timings: List[float] = []
+        self.completed_stages = 0
+        self.is_finished = False
+        
         self._lock = threading.Lock()
         
     def reset(self) -> None:
         """Reset the structure for a new collective request."""
         with self._lock:
-            self.collective_requests.clear()
+            self.stage_in_out_lengths = []
+            self.current_stage_requests = []
+            self.stage_timings = []
+            self.completed_stages = 0
+            self.is_finished = False
             self.current_time = time.time()
     
-    def initialize_collective(self, collective_id: int, num_stages: int, 
-                            requests_per_stage: List[int]) -> None:
-        """Initialize a new collective request structure."""
+    def update_structure(self, num_stages: int, requests_per_stage: List[int]) -> None:
+        """Update the structure parameters for a new collective request."""
         with self._lock:
-            self.collective_requests[collective_id] = {
-                'num_stages': num_stages,
-                'requests_per_stage': requests_per_stage,
-                'completed_stages': 0,
-                'stage_timings': [],
-                'start_time': time.time(),
-                'stage_start_time': time.time(),
-                'is_finished': False,
-                'current_stage_requests': [],
-                # New storage for individual request data
-                'stage_in_out_lengths': []  # List of (input_len, output_len) tuples per stage
-            }
+            self.num_stages = num_stages
+            self.requests_per_stage = requests_per_stage
+            self.reset()
     
-    def add_request_completion(self, collective_id: int, stage_id: int, 
-                             input_length: int, output_length: int) -> bool:
+    def add_length(self, input_length: int, output_length: int) -> bool:
         """
-        Add a completed request to the collective and check if stage/collective is finished.
+        Add length information and check if the DeepResearch structure is finished.
         
         Args:
-            collective_id: ID of the collective request
-            stage_id: Stage index within the collective
             input_length: Input token length
             output_length: Output token length
             
         Returns:
-            True if the entire collective is finished, False otherwise
+            True if the DeepResearch structure is finished, False otherwise
         """
         with self._lock:
-            if collective_id not in self.collective_requests:
-                logger.warning(f"Collective {collective_id} not initialized")
-                return False
-                
-            collective = self.collective_requests[collective_id]
-            
-            # Check if collective is already finished
-            if collective['is_finished']:
-                return True
-            
-            # Check if we've completed all stages
-            current_stage = collective['completed_stages']
-            if current_stage >= collective['num_stages']:
-                collective['is_finished'] = True
+            # Check if already finished
+            if self.is_finished:
                 return True
             
             # Add the request completion
-            collective['current_stage_requests'].append((input_length, output_length))
+            self.current_stage_requests.append((input_length, output_length))
             
             # Check if current stage is complete
-            if current_stage < len(collective['requests_per_stage']):
-                expected_requests = collective['requests_per_stage'][current_stage]
+            if self.completed_stages < len(self.requests_per_stage):
+                expected_requests = self.requests_per_stage[self.completed_stages]
             else:
-                # If stage_id exceeds our pattern, assume 1 request per stage
+                # If stage exceeds our pattern, assume 1 request per stage
                 expected_requests = 1
             
-            if len(collective['current_stage_requests']) == expected_requests:
+            if len(self.current_stage_requests) == expected_requests:
                 # Stage completed, store individual request data
-                collective['stage_in_out_lengths'].append(collective['current_stage_requests'].copy())
-                collective['stage_timings'].append(time.time() - collective['stage_start_time'])
-                collective['completed_stages'] += 1
-                collective['current_stage_requests'] = []
-                collective['stage_start_time'] = time.time()
+                self.stage_in_out_lengths.append(self.current_stage_requests.copy())
+                stage_elapsed = time.time() - self.current_time
+                # Ensure minimum stage time to avoid zero timing
+                self.stage_timings.append(max(stage_elapsed, 0.001))
+                self.completed_stages += 1
+                self.current_stage_requests = []
+                self.current_time = time.time()
                 
                 # Check if entire collective is finished
-                if collective['completed_stages'] >= collective['num_stages']:
-                    collective['is_finished'] = True
+                if self.completed_stages >= self.num_stages:
+                    self.is_finished = True
                     return True
                 
             return False
     
-    def is_collective_initialized(self, collective_id: int) -> bool:
-        """Check if a collective request is initialized."""
-        with self._lock:
-            if collective_id not in self.collective_requests:
-                return False
-            return True
     
-    def convert_to_graph(self, collective_id: int) -> Optional[Graph]:
-        """Convert a completed collective request to a graph."""
-        with self._lock:
-            if collective_id not in self.collective_requests:
-                return None
+    def convert_to_graph(self) -> Graph:
+        """Convert DeepResearch structure to new graph format with configurable approaches."""
+        nodes = []
+        
+        if self.use_all_node:
+            # All-node approach: each request becomes a node
+            for stage_idx in range(len(self.stage_in_out_lengths)):
+                stage_nodes = []
                 
-            collective = self.collective_requests[collective_id]
-            
-            if not collective['stage_in_out_lengths']:
-                return None
+                stage_requests = self.stage_in_out_lengths[stage_idx]
                 
-            nodes = []
-            
-            if self.use_all_node:
-                # All-node approach: each request becomes a node
-                for stage_idx in range(len(collective['stage_in_out_lengths'])):
-                    stage_nodes = []
+                # Create tuple for each request (input_len, output_len)
+                for input_len, output_len in stage_requests:
+                    stage_nodes.append((input_len, output_len))
                     
-                    stage_requests = collective['stage_in_out_lengths'][stage_idx]
-                    
-                    # Create tuple for each request (input_len, output_len)
-                    for input_len, output_len in stage_requests:
-                        stage_nodes.append((input_len, output_len))
-                        
-                    nodes.append(stage_nodes)
+                nodes.append(stage_nodes)
+        else:
+            # Super-node approach: one node per stage
+            for stage_idx in range(len(self.stage_in_out_lengths)):
+                stage_requests = self.stage_in_out_lengths[stage_idx]
+                
+                # Sum up all requests in stage
+                total_input = sum(req[0] for req in stage_requests)
+                total_output = sum(req[1] for req in stage_requests)
+                nodes.append([(total_input, total_output)])
+        
+        # Calculate stage ratios based on method
+        if self.stage_ratio_method == "execution_time" and self.stage_timings:
+            total_time = sum(self.stage_timings)
+            if total_time <= 0:
+                total_time = 0.001
+            stage_ratios = [t / total_time for t in self.stage_timings]
+        elif self.stage_ratio_method == "output_length" and self.stage_in_out_lengths:
+            # Use max output length of each stage
+            stage_max_outputs = [max(req[1] for req in stage_requests) if stage_requests else 0 
+                               for stage_requests in self.stage_in_out_lengths]
+            total_output = sum(stage_max_outputs)
+            if total_output > 0:
+                stage_ratios = [max_out / total_output for max_out in stage_max_outputs]
             else:
-                # Super-node approach: one node per stage
-                for stage_idx in range(len(collective['stage_in_out_lengths'])):
-                    stage_requests = collective['stage_in_out_lengths'][stage_idx]
-                    
-                    # Sum up all requests in stage
-                    total_input = sum(req[0] for req in stage_requests)
-                    total_output = sum(req[1] for req in stage_requests)
-                    nodes.append([(total_input, total_output)])
-            
-            # Calculate stage ratios based on method
-            if self.stage_ratio_method == "execution_time" and collective['stage_timings']:
-                total_time = sum(collective['stage_timings'])
-                if total_time > 0:
-                    stage_ratios = [t / total_time for t in collective['stage_timings']]
-                else:
-                    stage_ratios = [1.0 / len(collective['stage_timings'])] * len(collective['stage_timings'])
-            elif self.stage_ratio_method == "output_length" and collective['stage_in_out_lengths']:
-                # Use max output length of each stage
-                stage_max_outputs = [max(req[1] for req in stage_requests) if stage_requests else 0 
-                                   for stage_requests in collective['stage_in_out_lengths']]
-                total_output = sum(stage_max_outputs)
-                if total_output > 0:
-                    stage_ratios = [max_out / total_output for max_out in stage_max_outputs]
-                else:
-                    stage_ratios = [1.0 / len(collective['stage_in_out_lengths'])] * len(collective['stage_in_out_lengths'])
-            else:
-                # Default uniform distribution
-                num_stages = len(collective['stage_in_out_lengths'])
-                stage_ratios = [1.0 / num_stages] * num_stages
-
-            # logger.info(f"nodes: {nodes}, stage_ratios: {stage_ratios}")
-
-            return Graph(nodes, stage_ratios, self.use_all_node)
+                stage_ratios = [1.0 / len(self.stage_in_out_lengths)] * len(self.stage_in_out_lengths)
+        else:
+            # Default uniform distribution
+            num_stages = len(self.stage_in_out_lengths) if self.stage_in_out_lengths else self.num_stages
+            stage_ratios = [1.0 / num_stages] * num_stages
+        
+        return Graph(nodes, stage_ratios, self.use_all_node)
     
-    def convert_to_unfinished_graph(self, collective_id: int, 
-                                   input_length: int, 
-                                   predict_output_length: int) -> Optional[Graph]:
-        """Convert an unfinished collective request to a graph for prediction."""
-        with self._lock:
-            if collective_id not in self.collective_requests:
-                return None
+    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
+        """Convert unfinished DeepResearch structure to graph with predicted next stage."""
+        nodes = []
+        
+        # Add completed stages
+        if self.use_all_node:
+            # All-node approach
+            for stage_idx in range(len(self.stage_in_out_lengths)):
+                stage_nodes = []
                 
-            collective = self.collective_requests[collective_id]
-            nodes = []
+                stage_requests = self.stage_in_out_lengths[stage_idx]
+                
+                for input_len, output_len in stage_requests:
+                    stage_nodes.append((input_len, output_len))
+                    
+                nodes.append(stage_nodes)
             
-            # Add completed stages
-            if self.use_all_node:
-                # All-node approach
-                for stage_idx in range(len(collective['stage_in_out_lengths'])):
-                    stage_nodes = []
-                    
-                    stage_requests = collective['stage_in_out_lengths'][stage_idx]
-                    
-                    for input_len, output_len in stage_requests:
-                        stage_nodes.append((input_len, output_len))
-                        
-                    nodes.append(stage_nodes)
+            # Add predicted stage
+            nodes.append([(input_length, predict_output_length)])
+        else:
+            # Super-node approach
+            for stage_idx in range(len(self.stage_in_out_lengths)):
+                stage_requests = self.stage_in_out_lengths[stage_idx]
                 
-                # Add predicted stage
-                nodes.append([(input_length, predict_output_length)])
-            else:
-                # Super-node approach
-                for stage_idx in range(len(collective['stage_in_out_lengths'])):
-                    stage_requests = collective['stage_in_out_lengths'][stage_idx]
-                    
-                    total_input = sum(req[0] for req in stage_requests)
-                    total_output = sum(req[1] for req in stage_requests)
-                    
-                    nodes.append([(total_input, total_output)])
+                total_input = sum(req[0] for req in stage_requests)
+                total_output = sum(req[1] for req in stage_requests)
                 
-                # Add predicted stage
-                nodes.append([(input_length, predict_output_length)])
+                nodes.append([(total_input, total_output)])
             
-            return Graph(nodes, None, self.use_all_node)
+            # Add predicted stage
+            nodes.append([(input_length, predict_output_length)])
+        
+        return Graph(nodes, None, self.use_all_node)
 
 
 def predict_stage_ratio(query_graph: Graph, graph_set) -> float:
@@ -553,7 +524,9 @@ def predict_deepresearch_stage_ratio(query_graph: Graph, graph_set,
         logger.info(f"stage_index: {stage_index}, sum(best_graph.times[:stage_index+1]) / sum(best_graph.times): {sum(best_graph.times[:stage_index+1]) / sum(best_graph.times)}")
         # logger.info(f"best_graph.times: {best_graph.times}")
         # logger.info(f"best_graph.nodes: {best_graph.nodes}")
-        return sum(best_graph.times[:stage_index+1]) / sum(best_graph.times)
+        ratio_1 = sum(best_graph.times[:stage_index+1]) / sum(best_graph.times)
+        ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_index+1]) / sum(Default_DeepResearch_Requests_Pattern)
+        return max(ratio_1, ratio_2)
 
 
 def is_tot_request(request_type: int) -> bool:
@@ -561,6 +534,238 @@ def is_tot_request(request_type: int) -> bool:
     # Assuming ToT requests have a specific type identifier
     # This should be coordinated with the request type definitions
     return request_type in [0, 1]  # LATENCY or THROUGHPUT
+
+
+def graph_distance(query_graph: Graph, target_graph: Graph, input_w=0.3, output_w=0.7, sigma_input=1.0, sigma_output=1.0):
+    """
+    Compute the distance between a query graph and a target graph using new tuple-based node format.
+    Returns 0.0 if two graphs have different number of stages, otherwise uses the same logic as compute_similarity.
+    
+    Args:
+        query_graph: The query graph object, containing nodes as tuples (input_len, output_len).
+        target_graph: The target graph object, containing nodes as tuples (input_len, output_len).
+        input_w: The weight for input length similarity.
+        output_w: The weight for output length similarity.
+        sigma_input: The scale parameter for the Gaussian kernel used in input similarity.
+        sigma_output: The scale parameter for the Gaussian kernel used in output similarity.
+
+    Returns:
+        A distance score representing the distance between the two graphs.
+    """
+    # Return 0.0 if two graphs have different number of stages
+    if target_graph.get_num_stages() != query_graph.get_num_stages():
+        return 0.0
+    
+    total_similarity = 0.0
+    
+    # Compare stage by stage
+    for stage_idx in range(query_graph.get_num_stages()):
+        query_stage_nodes = query_graph.nodes[stage_idx].copy()
+        target_stage_nodes = target_graph.nodes[stage_idx].copy()
+        
+        # Expand to match lengths
+        if len(query_stage_nodes) > len(target_stage_nodes):
+            # Expand target with (0, 0) nodes
+            while len(target_stage_nodes) < len(query_stage_nodes):
+                target_stage_nodes.append((0, 0))
+        elif len(query_stage_nodes) < len(target_stage_nodes):
+            # Expand query with appropriate nodes
+            if query_stage_nodes and query_stage_nodes[0][1] is not None:
+                # Expand with (0, 0) if output is not None
+                expand_node = (0, 0)
+            else:
+                # Expand with (0, None) if output is None
+                expand_node = (0, None)
+            while len(query_stage_nodes) < len(target_stage_nodes):
+                query_stage_nodes.append(expand_node)
+        
+        # Now both lists have same length, find best pairwise matching
+        stage_similarity = find_best_matching_similarity(
+            query_stage_nodes, target_stage_nodes, 
+            input_w, output_w, sigma_input, sigma_output
+        )
+        total_similarity += stage_similarity
+    
+    return total_similarity
+
+
+def k_medoids_clustering(graphs: List[Graph], k: int, max_iterations: int = 100):
+    """
+    Perform k-medoids clustering on a list of graphs using graph_distance as the distance metric.
+    
+    Args:
+        graphs: List of Graph objects to cluster
+        k: Number of clusters
+        max_iterations: Maximum number of iterations for the algorithm
+    
+    Returns:
+        Tuple of (medoids_indices, cluster_assignments)
+        - medoids_indices: List of indices of the k medoids in the original graphs list
+        - cluster_assignments: List of cluster assignments for each graph (0 to k-1)
+    """
+    if not graphs or k <= 0 or k > len(graphs):
+        return [], []
+    
+    n = len(graphs)
+    
+    # Initialize medoids randomly
+    medoids_indices = random.sample(range(n), k)
+    
+    for iteration in range(max_iterations):
+        # Assign each graph to the nearest medoid
+        cluster_assignments = []
+        for i, graph in enumerate(graphs):
+            best_cluster = 0
+            best_distance = graph_distance(graph, graphs[medoids_indices[0]])
+            
+            for j in range(1, k):
+                distance = graph_distance(graph, graphs[medoids_indices[j]])
+                if distance > best_distance:  # Higher similarity means closer
+                    best_distance = distance
+                    best_cluster = j
+            
+            cluster_assignments.append(best_cluster)
+        
+        # Update medoids
+        new_medoids = []
+        changed = False
+        
+        for cluster_id in range(k):
+            # Find all graphs in this cluster
+            cluster_graphs = [i for i, assignment in enumerate(cluster_assignments) if assignment == cluster_id]
+            
+            if not cluster_graphs:
+                # If cluster is empty, keep the current medoid
+                new_medoids.append(medoids_indices[cluster_id])
+                continue
+            
+            # Find the graph that minimizes total distance to all graphs in the cluster
+            best_medoid = cluster_graphs[0]
+            best_total_distance = 0
+            
+            # Calculate total distance for current medoid candidate
+            for i in cluster_graphs:
+                for j in cluster_graphs:
+                    if i != j:
+                        best_total_distance += graph_distance(graphs[i], graphs[j])
+            
+            # Try all other graphs in the cluster as potential medoids
+            for candidate in cluster_graphs[1:]:
+                total_distance = 0
+                for i in cluster_graphs:
+                    for j in cluster_graphs:
+                        if i != j:
+                            total_distance += graph_distance(graphs[i], graphs[j])
+                
+                if total_distance > best_total_distance:  # Higher similarity is better
+                    best_total_distance = total_distance
+                    best_medoid = candidate
+            
+            new_medoids.append(best_medoid)
+            if best_medoid != medoids_indices[cluster_id]:
+                changed = True
+        
+        medoids_indices = new_medoids
+        
+        # If no medoids changed, we've converged
+        if not changed:
+            break
+    
+    return medoids_indices, cluster_assignments
+
+
+class DynamicClustering:
+    """
+    Manages dynamic clustering of graphs based on the number of finished collective requests.
+    """
+    def __init__(self):
+        self.finished_requests: List[Graph] = []
+        self.clusters: List[List[int]] = []  # List of clusters, each containing indices into finished_requests
+        self.medoids: List[int] = []  # Indices of medoids in finished_requests
+        self.cluster_thresholds = [100, 150, 200, 250, 300, 350, 400, 450, 500]  # Add more as needed
+        self.current_k = 0
+        self._lock = threading.Lock()
+    
+    def add_finished_request(self, graph: Graph):
+        """Add a finished collective request graph."""
+        with self._lock:
+            self.finished_requests.append(graph)
+            self._update_clustering()
+    
+    def _update_clustering(self):
+        """Update clustering based on the current number of finished requests."""
+        n_requests = len(self.finished_requests)
+        
+        # Determine the target number of clusters
+        target_k = 0
+        for i, threshold in enumerate(self.cluster_thresholds):
+            if n_requests >= threshold:
+                target_k = i + 2  # Start with 2 clusters at 100 requests
+            else:
+                break
+        
+        # If we haven't reached the first threshold (100), no clustering needed
+        if target_k == 0:
+            self.clusters = []
+            self.medoids = []
+            self.current_k = 0
+            return
+        
+        # If target k changed or we need to re-cluster
+        should_recluster = (target_k != self.current_k) or (n_requests in self.cluster_thresholds)
+        
+        if should_recluster:
+            logger.info(f"Re-clustering {n_requests} requests into {target_k} clusters")
+            medoid_indices, assignments = k_medoids_clustering(self.finished_requests, target_k)
+            
+            # Update clusters
+            self.clusters = [[] for _ in range(target_k)]
+            for i, cluster_id in enumerate(assignments):
+                self.clusters[cluster_id].append(i)
+            
+            self.medoids = medoid_indices
+            self.current_k = target_k
+        else:
+            # Just add the new request to the closest cluster
+            if self.medoids:
+                new_graph = self.finished_requests[-1]
+                best_cluster = 0
+                best_distance = graph_distance(new_graph, self.finished_requests[self.medoids[0]])
+                
+                for i in range(1, len(self.medoids)):
+                    distance = graph_distance(new_graph, self.finished_requests[self.medoids[i]])
+                    if distance > best_distance:
+                        best_distance = distance
+                        best_cluster = i
+                
+                self.clusters[best_cluster].append(len(self.finished_requests) - 1)
+    
+    def get_cluster_info(self):
+        """Get current clustering information."""
+        with self._lock:
+            return {
+                'n_requests': len(self.finished_requests),
+                'n_clusters': self.current_k,
+                'cluster_sizes': [len(cluster) for cluster in self.clusters],
+                'medoids': self.medoids.copy()
+            }
+    
+    def find_best_match(self, query_graph: Graph) -> Optional[Graph]:
+        """Find the best matching graph from medoids for the given query graph."""
+        with self._lock:
+            if not self.medoids:
+                return None
+            
+            best_graph = None
+            best_similarity = -float('inf')
+            
+            for medoid_idx in self.medoids:
+                similarity = graph_distance(query_graph, self.finished_requests[medoid_idx])
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_graph = self.finished_requests[medoid_idx]
+            
+            return best_graph
 
 
 def is_deepresearch_request(request_type: int) -> bool:
