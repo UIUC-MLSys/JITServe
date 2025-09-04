@@ -94,7 +94,7 @@ def send_and_update_request_info(request_info: RequestInfo, prompt: str):
         if result_len:
             request_info.output_len = result_len
 
-def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id: int, stage_id: int = 0) -> float:
+def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id: int, stage_id: int = 0, accumulate_stage_ratio: float = 0.0) -> float:
     """Calculate stage ratio based on graph matching mode and structure type."""
     global graph_matching_mode, graph_structure_type, use_total_deadline, use_all_node
     global collection_graph_set, dynamic_clustering, collection_graph_unfinished_dict, collection_deepresearch_unfinished_dict
@@ -113,8 +113,11 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
     if graph_matching_mode == "none":
         return default_ratio
     elif graph_matching_mode == "precise":
-        # Oracle knowledge - return optimal ratio (for now, use default)
-        if graph_structure_type == "deepresearch":
+        # Oracle knowledge - return accumulate_stage_ratio for deepresearch
+        if graph_structure_type == "deepresearch" and accumulate_stage_ratio > 0.0:
+            logger.info(f"Using precise accumulate_stage_ratio: {accumulate_stage_ratio}")
+            return accumulate_stage_ratio
+        else:
             return default_ratio
     elif graph_matching_mode == "static":
         # First stage matching only
@@ -235,6 +238,9 @@ async def generate(request: Request) -> Response:
     # Extract target_output_length if provided by client
     target_output_length = request_dict.pop("target_output_length", None)
     
+    # Extract accumulate_stage_ratio if provided by client
+    accumulate_stage_ratio = request_dict.pop("accumulate_stage_ratio", 0.0)
+    
     sampling_params_dict = request_dict.pop("sampling_params")
     # Add target_output_length to sampling params if provided
     if target_output_length is not None:
@@ -285,7 +291,7 @@ async def generate(request: Request) -> Response:
 
         # Calculate stage ratio based on matching mode and structure
         if use_graph_matching or graph_matching_mode != "none":
-            stage_ratio = calculate_stage_ratio(request_info, prompt, collection_id, stage_id)
+            stage_ratio = calculate_stage_ratio(request_info, prompt, collection_id, stage_id, accumulate_stage_ratio)
             request_info.deadline *= stage_ratio
 
     assert engine is not None

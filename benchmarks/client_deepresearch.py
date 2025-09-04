@@ -28,7 +28,8 @@ class RequestInput:
         client_id: int,
         api_url: str,
         num_stages: int = 0,
-        requests_per_stage: List[int] = None
+        requests_per_stage: List[int] = None,
+        accumulate_stage_ratio: float = 0.0
     ):
         self.request = request
         self.slo_constraint = slo_constraint
@@ -37,6 +38,7 @@ class RequestInput:
         self.api_url = api_url
         self.num_stages = num_stages
         self.requests_per_stage = requests_per_stage or []
+        self.accumulate_stage_ratio = accumulate_stage_ratio
 
 
 class RequestOutput:
@@ -118,6 +120,7 @@ async def send_single_request(
             "target_output_length": request_info.request.output_len,
             "num_stages": request_info.num_stages,
             "requests_per_stage": request_info.requests_per_stage,
+            "accumulate_stage_ratio": request_info.accumulate_stage_ratio,
         }
         
         # Update the prompt in the payload
@@ -184,6 +187,7 @@ async def send_stage_requests(
     is_stream: bool = True,
     num_stages: int = 0,
     requests_per_stage: List[int] = None,
+    collective_request: 'DeepResearchCollectiveRequest' = None,
 ) -> StageOutput:
     """Send all requests in a stage concurrently."""
     stage_output = StageOutput()
@@ -191,12 +195,18 @@ async def send_stage_requests(
     
     st = time.perf_counter()
     
+    # Calculate accumulate_stage_ratio for this stage
+    accumulate_stage_ratio = 0.0
+    if collective_request is not None and stage_requests:
+        current_stage_id = stage_requests[0].stage_id
+        accumulate_stage_ratio = collective_request.calculate_accumulate_stage_ratio(current_stage_id)
+    
     # Create tasks for all requests in the stage
     tasks = []
     for request in stage_requests:
         request_info = RequestInput(
             request, slo_constraint, sampling_params, client_id, api_url, 
-            num_stages, requests_per_stage or []
+            num_stages, requests_per_stage or [], accumulate_stage_ratio
         )
         tasks.append(send_single_request(request_info, model_name, client_deadline, is_stream))
     
@@ -256,7 +266,8 @@ async def send_deepresearch_collective_request(
             client_deadline,
             is_stream,
             num_stages,
-            requests_per_stage
+            requests_per_stage,
+            collective_request
         )
         
         collective_output.stage_outputs.append(stage_output)

@@ -101,6 +101,40 @@ class DeepResearchCollectiveRequest:
         num_stages = self.stage_num
         requests_per_stage = [len(stage.requests) for stage in self.stages]
         return num_stages, requests_per_stage
+    
+    def get_max_output_lengths_per_stage(self) -> List[int]:
+        """Get the maximum output length for each stage."""
+        max_outputs = []
+        for stage in self.stages:
+            if stage.requests:
+                max_output = max(request.output_tokens for request in stage.requests)
+                max_outputs.append(max_output)
+            else:
+                max_outputs.append(0)
+        return max_outputs
+    
+    def calculate_accumulate_stage_ratio(self, current_stage_id: int) -> float:
+        """
+        Calculate accumulate_stage_ratio as (sum of max_output till current stage) / (sum max output length of all stages).
+        
+        Args:
+            current_stage_id: The current stage ID (0-indexed)
+            
+        Returns:
+            The accumulate stage ratio
+        """
+        max_outputs = self.get_max_output_lengths_per_stage()
+        
+        if not max_outputs or sum(max_outputs) == 0:
+            return 0.0
+            
+        # Sum of max outputs up to and including current stage
+        sum_till_current = sum(max_outputs[:current_stage_id + 1])
+        
+        # Sum of all max outputs
+        sum_all = sum(max_outputs)
+        
+        return sum_till_current / sum_all
 
 
 

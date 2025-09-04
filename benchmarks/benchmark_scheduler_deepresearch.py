@@ -424,7 +424,7 @@ async def benchmark_deepresearch(
         burst=burst,
         sampling_params=sampling_params,
         client_id=0,
-        client_deadline=600,
+        client_deadline=1200,
         api_url=api_url,
         model_name=model,
         is_stream=is_stream,

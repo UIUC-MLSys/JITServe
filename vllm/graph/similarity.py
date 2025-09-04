@@ -457,6 +457,11 @@ def find_best_matching_similarity(query_nodes, target_nodes, input_w, output_w, 
     if not query_nodes or not target_nodes:
         return 0.0
         
+    # For performance, limit permutation search for large node lists
+    # Use greedy matching for lists larger than 6 nodes to avoid factorial explosion
+    if len(target_nodes) > 6:
+        return _greedy_matching_similarity(query_nodes, target_nodes, input_w, output_w, sigma_input, sigma_output)
+        
     max_similarity = 0.0
     
     # Try all permutations of target nodes to find best matching
@@ -467,6 +472,44 @@ def find_best_matching_similarity(query_nodes, target_nodes, input_w, output_w, 
         max_similarity = max(max_similarity, similarity)
     
     return max_similarity
+
+
+def _greedy_matching_similarity(query_nodes, target_nodes, input_w, output_w, sigma_input, sigma_output):
+    """
+    Fast greedy matching algorithm to avoid factorial time complexity.
+    
+    Args:
+        query_nodes: List of query nodes (tuples)
+        target_nodes: List of target nodes (tuples) 
+        input_w, output_w: Weights for input and output similarity
+        sigma_input, sigma_output: Scale parameters for Gaussian kernels
+    
+    Returns:
+        Similarity score using greedy matching
+    """
+    if not query_nodes or not target_nodes:
+        return 0.0
+    
+    used_targets = set()
+    total_similarity = 0.0
+    
+    # For each query node, find the best available target node
+    for q_node in query_nodes:
+        best_similarity = 0.0
+        best_target_idx = -1
+        
+        for i, t_node in enumerate(target_nodes):
+            if i not in used_targets:
+                similarity = node_similarity(q_node, t_node, input_w, output_w, sigma_input, sigma_output)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_target_idx = i
+        
+        if best_target_idx >= 0:
+            used_targets.add(best_target_idx)
+            total_similarity += best_similarity
+    
+    return total_similarity
 
 
 def node_similarity(node1, node2, input_w, output_w, sigma_input, sigma_output):
