@@ -832,19 +832,36 @@ class DynamicClustering:
             }
     
     def find_best_match(self, query_graph: Graph) -> Optional[Graph]:
-        """Find the best matching graph from medoids for the given query graph."""
+        """Find the best matching graph by first finding closest cluster, then most similar graph within that cluster."""
         with self._lock:
-            if not self.medoids:
+            if not self.medoids or not self.clusters:
                 return None
             
+            # Step 1: Find the closest cluster by comparing with medoids
+            best_cluster_idx = 0
+            best_cluster_similarity = -float('inf')
+            
+            for cluster_idx, medoid_idx in enumerate(self.medoids):
+                medoid_graph = self.finished_requests[medoid_idx]
+                similarity = graph_distance(query_graph, medoid_graph)
+                if similarity > best_cluster_similarity:
+                    best_cluster_similarity = similarity
+                    best_cluster_idx = cluster_idx
+            
+            # Step 2: Find the most similar graph within the closest cluster
+            closest_cluster = self.clusters[best_cluster_idx]
+            if not closest_cluster:
+                return None
+                
             best_graph = None
             best_similarity = -float('inf')
             
-            for medoid_idx in self.medoids:
-                similarity = graph_distance(query_graph, self.finished_requests[medoid_idx])
+            for graph_idx in closest_cluster:
+                candidate_graph = self.finished_requests[graph_idx]
+                similarity = graph_distance(query_graph, candidate_graph)
                 if similarity > best_similarity:
                     best_similarity = similarity
-                    best_graph = self.finished_requests[medoid_idx]
+                    best_graph = candidate_graph
             
             return best_graph
 

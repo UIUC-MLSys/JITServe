@@ -563,12 +563,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prediction-model-path",
         type=str,
-        default='/home/jovyan/workspace/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
+        # default='/home/jovyan/workspace/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
+        default='/home/jovyan/workspace/qrf_model/online_EXP_model_0_qrf_deepresearch_new_online_llama3-8b.pkl',
         help="Path to the prediction model")
     parser.add_argument(
         "--prediction-tokenizer-path",
         type=str,
-        default='/home/jovyan/workspace/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
+        # default='/home/jovyan/workspace/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
+        default='/home/jovyan/workspace/qrf_vectorizer/online_EXP_vec_0_qrf_deepresearch_new_online_llama3-8b.pkl',
         help="Path to the prediction tokenizer")
     parser.add_argument(
         "--graph-structure-type",
