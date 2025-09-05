@@ -5,23 +5,12 @@ export HF_TOKEN=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
 # 定义测试参数组合
 test_cases=(
     # bs arrival_rate penalty_factor slo_constraint num_prompts use_all_node stage_ratio_method
-    # "32 0.33 100 2,0.1,20 594 true output_length"
-    # "32 0.33 100 2,0.1,20 594 false output_length"
     "32 0.34 100 2,0.1,20 594 true output_length"
-    # "32 0.34 100 2,0.1,20 594 false output_length"
     # "32 0.35 100 2,0.1,20 594 true output_length"
-    # "32 0.35 100 2,0.1,20 594 false output_length"
     "32 0.36 100 2,0.1,20 594 true output_length"
     # "32 0.37 100 2,0.1,20 594 true output_length"
     "32 0.38 100 2,0.1,20 594 true output_length"
-    # "32 0.36 100 2,0.1,20 594 false output_length"
-    # "32 0.33 1 2,0.1,20 594 false execution_time"
-    # "32 0.33 1 2,0.1,20 594 true execution_time"
-    # "32 0.5 100 2,0.1,20 200 true output_length" # test
-    # "16 0.35 100 2,0.1,20 200 true output_length"
-    # "32 0.5 100 2,0.1,20 200 false output_length" # test
-    # "16 0.35 100 2,0.1,20 200 false output_length"
-    # "16 0.36 100 2,0.1,20 5 true output_length"
+    # "16 0.36 100 2,0.1,20 10 true output_length"
 )
 
 policies=(
@@ -29,9 +18,9 @@ policies=(
     "concord-online-graph"
     # "concord-default-structure"
     "concord-total-deadline-no-graph"
-    # # "concord-static-default-structure"
+    # "concord-static-default-structure"
     "concord-static-total-deadline"
-    # "concord-precise"
+    "concord-precise"
 )
 output_dir="benchmark_results"
 model="meta-llama/Llama-3.1-8B-Instruct"
@@ -77,15 +66,22 @@ for test_case in "${test_cases[@]}"; do
         fi
         extra_args="$extra_args --stage-ratio-method $stage_ratio_method"
 
-        # 启动服务器
-        echo "启动服务器..."
-        
-        # 构建日志文件名
+        # 构建节点类型标识
         if [ "$use_all_node" = "true" ]; then
             node_type="allnode"
         else
             node_type="supernode"
         fi
+        
+        # 检查输出文件是否已存在，如果存在则跳过此设置
+        output_file="${output_dir}/deepresearch_bs_${bs}_penalty_${penalty_factor}_rate${arrival_rate}_${policy}_${node_type}_${stage_ratio_method}.log"
+        if [ -f "$output_file" ]; then
+            echo "输出文件已存在，跳过此设置: $output_file"
+            continue
+        fi
+
+        # 启动服务器
+        echo "启动服务器..."
         server_log_file="logs/server_rate${arrival_rate}_${policy}_${node_type}_${stage_ratio_method}.log"
         
         if [ "$policy" = "fcfs" ]; then
@@ -108,6 +104,7 @@ for test_case in "${test_cases[@]}"; do
         elif [ "$policy" = "concord-total-deadline-no-graph" ]; then
             python3 -m vllm.entrypoints.api_server \
                 --scheduling-policy "concord" \
+                --disable-prediction \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
                 --max-num-seqs "$bs" \
@@ -129,6 +126,7 @@ for test_case in "${test_cases[@]}"; do
         elif [ "$policy" = "concord-static-total-deadline" ]; then
             python3 -m vllm.entrypoints.api_server \
                 --scheduling-policy "concord" \
+                --disable-prediction \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
                 --max-num-seqs "$bs" \
@@ -177,14 +175,7 @@ for test_case in "${test_cases[@]}"; do
         # 运行性能测试
         echo "启动客户端..."
         
-        # 构建文件名中的节点类型标识
-        if [ "$use_all_node" = "true" ]; then
-            node_type="allnode"
-        else
-            node_type="supernode"
-        fi
-
-        output_file="${output_dir}/deepresearch_bs_${bs}_penalty_${penalty_factor}_rate${arrival_rate}_${policy}_${node_type}_${stage_ratio_method}.log"
+        
         python3 benchmarks/benchmark_scheduler_deepresearch.py \
             --model "$model" \
             --policy "$policy" \

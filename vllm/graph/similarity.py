@@ -2,6 +2,7 @@ import math
 import time
 import threading
 import random
+import asyncio
 from itertools import permutations
 from typing import List, Dict, Any, Optional, Tuple
 from vllm.logger import init_logger
@@ -632,7 +633,7 @@ def graph_distance(query_graph: Graph, target_graph: Graph, input_w=0.3, output_
     return total_similarity
 
 
-def k_medoids_clustering(graphs: List[Graph], k: int, max_iterations: int = 100):
+async def k_medoids_clustering(graphs: List[Graph], k: int, max_iterations: int = 100):
     """
     Perform k-medoids clustering on a list of graphs using graph_distance as the distance metric.
     
@@ -651,6 +652,12 @@ def k_medoids_clustering(graphs: List[Graph], k: int, max_iterations: int = 100)
     
     n = len(graphs)
     
+    # # For very large datasets, reduce max iterations to prevent timeouts
+    # if n > 500:
+    #     max_iterations = min(max_iterations, 20)
+    # elif n > 200:
+    #     max_iterations = min(max_iterations, 50)
+    
     # Initialize medoids randomly
     medoids_indices = random.sample(range(n), k)
     
@@ -668,6 +675,10 @@ def k_medoids_clustering(graphs: List[Graph], k: int, max_iterations: int = 100)
                     best_cluster = j
             
             cluster_assignments.append(best_cluster)
+            
+            # Yield control every 10 graphs to prevent blocking
+            if i % 10 == 0:
+                await asyncio.sleep(0)
         
         # Update medoids
         new_medoids = []
@@ -683,26 +694,24 @@ def k_medoids_clustering(graphs: List[Graph], k: int, max_iterations: int = 100)
                 continue
             
             # Find the graph that minimizes total distance to all graphs in the cluster
+            # Use a more efficient O(n^2) approach
             best_medoid = cluster_graphs[0]
-            best_total_distance = 0
+            best_total_distance = -float('inf')
             
-            # Calculate total distance for current medoid candidate
-            for i in cluster_graphs:
-                for j in cluster_graphs:
-                    if i != j:
-                        best_total_distance += graph_distance(graphs[i], graphs[j])
-            
-            # Try all other graphs in the cluster as potential medoids
-            for candidate in cluster_graphs[1:]:
+            # For each potential medoid, calculate sum of distances to all other graphs
+            for candidate_idx, candidate in enumerate(cluster_graphs):
                 total_distance = 0
-                for i in cluster_graphs:
-                    for j in cluster_graphs:
-                        if i != j:
-                            total_distance += graph_distance(graphs[i], graphs[j])
+                for other_idx in cluster_graphs:
+                    if candidate != other_idx:
+                        total_distance += graph_distance(graphs[candidate], graphs[other_idx])
                 
                 if total_distance > best_total_distance:  # Higher similarity is better
                     best_total_distance = total_distance
                     best_medoid = candidate
+                
+                # Yield control every few candidates to prevent blocking
+                if candidate_idx % 5 == 0:
+                    await asyncio.sleep(0)
             
             new_medoids.append(best_medoid)
             if best_medoid != medoids_indices[cluster_id]:
@@ -725,63 +734,92 @@ class DynamicClustering:
         self.finished_requests: List[Graph] = []
         self.clusters: List[List[int]] = []  # List of clusters, each containing indices into finished_requests
         self.medoids: List[int] = []  # Indices of medoids in finished_requests
-        self.cluster_thresholds = [100, 150, 200, 250, 300, 350, 400, 450, 500]  # Add more as needed
+        self.cluster_thresholds = [100, 200, 300, 400, 500]  # More aggressive thresholds to reduce re-clustering frequency
         self.current_k = 0
         self._lock = threading.Lock()
+        self._clustering_in_progress = False
     
     def add_finished_request(self, graph: Graph):
         """Add a finished collective request graph."""
         with self._lock:
             self.finished_requests.append(graph)
-            self._update_clustering()
+            # Schedule async clustering in background if we have an event loop
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._update_clustering_async())
+            except RuntimeError:
+                # No event loop running, skip async clustering
+                logger.warning("No event loop running, skipping async clustering update")
     
-    def _update_clustering(self):
+    async def _update_clustering_async(self):
         """Update clustering based on the current number of finished requests."""
-        n_requests = len(self.finished_requests)
-        
-        # Determine the target number of clusters
-        target_k = 0
-        for i, threshold in enumerate(self.cluster_thresholds):
-            if n_requests >= threshold:
-                target_k = i + 2  # Start with 2 clusters at 100 requests
-            else:
-                break
-        
-        # If we haven't reached the first threshold (100), no clustering needed
-        if target_k == 0:
-            self.clusters = []
-            self.medoids = []
-            self.current_k = 0
+        # Use a lock to prevent concurrent clustering operations
+        if hasattr(self, '_clustering_in_progress') and self._clustering_in_progress:
             return
         
-        # If target k changed or we need to re-cluster
-        should_recluster = (target_k != self.current_k) or (n_requests in self.cluster_thresholds)
+        self._clustering_in_progress = True
         
-        if should_recluster:
-            logger.info(f"Re-clustering {n_requests} requests into {target_k} clusters")
-            medoid_indices, assignments = k_medoids_clustering(self.finished_requests, target_k)
-            
-            # Update clusters
-            self.clusters = [[] for _ in range(target_k)]
-            for i, cluster_id in enumerate(assignments):
-                self.clusters[cluster_id].append(i)
-            
-            self.medoids = medoid_indices
-            self.current_k = target_k
-        else:
-            # Just add the new request to the closest cluster
-            if self.medoids:
-                new_graph = self.finished_requests[-1]
-                best_cluster = 0
-                best_distance = graph_distance(new_graph, self.finished_requests[self.medoids[0]])
+        try:
+            with self._lock:
+                n_requests = len(self.finished_requests)
                 
-                for i in range(1, len(self.medoids)):
-                    distance = graph_distance(new_graph, self.finished_requests[self.medoids[i]])
-                    if distance > best_distance:
-                        best_distance = distance
-                        best_cluster = i
+                # Determine the target number of clusters
+                target_k = 0
+                for i, threshold in enumerate(self.cluster_thresholds):
+                    if n_requests >= threshold:
+                        target_k = i + 2  # Start with 2 clusters at 100 requests
+                    else:
+                        break
                 
-                self.clusters[best_cluster].append(len(self.finished_requests) - 1)
+                # If we haven't reached the first threshold (100), no clustering needed
+                if target_k == 0:
+                    self.clusters = []
+                    self.medoids = []
+                    self.current_k = 0
+                    return
+                
+                # If target k changed or we need to re-cluster
+                should_recluster = (target_k != self.current_k) or (n_requests in self.cluster_thresholds)
+                
+            if should_recluster:
+                logger.info(f"Re-clustering {n_requests} requests into {target_k} clusters")
+                try:
+                    # Use asyncio timeout instead of signal-based timeout
+                    medoid_indices, assignments = await asyncio.wait_for(
+                        k_medoids_clustering(self.finished_requests, target_k), 
+                        timeout=30.0
+                    )
+                except (asyncio.TimeoutError, Exception) as e:
+                    logger.warning(f"Clustering operation failed or timed out: {e}, falling back to simple assignment")
+                    # Fall back to simple random assignment
+                    medoid_indices = random.sample(range(n_requests), min(target_k, n_requests))
+                    assignments = [i % target_k for i in range(n_requests)]
+                
+                # Update clusters
+                with self._lock:
+                    self.clusters = [[] for _ in range(target_k)]
+                    for i, cluster_id in enumerate(assignments):
+                        self.clusters[cluster_id].append(i)
+                    
+                    self.medoids = medoid_indices
+                    self.current_k = target_k
+            else:
+                # Just add the new request to the closest cluster
+                with self._lock:
+                    if self.medoids:
+                        new_graph = self.finished_requests[-1]
+                        best_cluster = 0
+                        best_distance = graph_distance(new_graph, self.finished_requests[self.medoids[0]])
+                        
+                        for i in range(1, len(self.medoids)):
+                            distance = graph_distance(new_graph, self.finished_requests[self.medoids[i]])
+                            if distance > best_distance:
+                                best_distance = distance
+                                best_cluster = i
+                        
+                        self.clusters[best_cluster].append(len(self.finished_requests) - 1)
+        finally:
+            self._clustering_in_progress = False
     
     def get_cluster_info(self):
         """Get current clustering information."""
