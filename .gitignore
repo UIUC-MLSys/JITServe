@@ -207,12 +207,12 @@ benchmarks/*.json
 benchmarks/*.csv
 
 # Benchmark results
-vllm/entrypoints/result-*.txt
 result/
-benchmarks_results/
-benchmarks_results_old/
+benchmarks_results.*/
 t-*.txt
 *.pdf
+*.tar
+./vllm_profile
 
 # Simulation results
 simulate.sh

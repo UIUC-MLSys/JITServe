@@ -40,6 +40,7 @@ class RequestOutput:
         self.request_service_gain = 0
         self.request_latency = 0
         self.request_finish_time = 0
+        self.collection_id = -1
         # Task level metrics
         self.task_latency = 0
         # Debug porpeties
@@ -167,6 +168,7 @@ async def send_collective_request(
             
             output = RequestOutput()
             output.request_input = input_prompt
+            output.collection_id = request_info.request.collection_id
             output.request_type = request_info.request.request_type.value
 
             st = time.perf_counter()
@@ -240,6 +242,7 @@ async def send_collective_request(
             
             output = RequestOutput()
             output.request_input = value_prompt
+            output.collection_id = request_info.request.collection_id
             output.request_type = request_info.request.request_type.value
             try:
                 async with session.post(url=api_url, json=new_payload) as response:
@@ -324,7 +327,8 @@ async def send_collective_request(
             ed = time.perf_counter()
             task_latency = ed - st
             if task_latency > request_info.request.deadline / 1000:
-                slo_violation_penalty = min(1, ((request_info.request.deadline / 1000) / task_latency)**penalty_factor)
+                slo_violation_penalty = (request_info.request.deadline / 1000) / task_latency
+                slo_violation_penalty = max(1e-6, min(1.0, slo_violation_penalty))**penalty_factor
                 for output in output_list:
                     output.finish_before_ddl = False
                     output.request_service_gain *= slo_violation_penalty
@@ -362,6 +366,7 @@ async def send_request(
     
     output = RequestOutput()
     output.request_type = request_info.request.request_type.value
+    output.collection_id = request_info.request.collection_id
     output.request_input = request_info.request.prompt
     
     timeout = aiohttp.ClientTimeout(total=client_deadline)
@@ -461,6 +466,7 @@ async def client_simulator(
             tasks.append(asyncio.create_task(send_request(request_info, model_name, deadline, pbar)))
         
     outputs: List[List[RequestOutput]] = await asyncio.gather(*tasks)
+    finish_time = []
     tasks: List[TaskOutput] = []
     for output_list in outputs:
         if len(output_list) == 0:
@@ -476,6 +482,19 @@ async def client_simulator(
                 task_output.task_output.append(output.request_output)
             tasks.append(task_output)
         for output in output_list:
+            finish_time.append(output.request_finish_time)
             output.request_finish_time -= start_time
+
+    finish_time = sorted(finish_time)
+    # start from a new line
+    print()
+
+    # collect throughput for every n requests
+    n = 100
+    for i in range(n, len(finish_time) + 1, n):
+        t = finish_time[i - 1] - finish_time[i - n]
+        if t > 0:
+            throughput = n / t
+            print(f"Throughput for requests {i-n+1} to {i}: {throughput:.2f} req/s")
     
     return outputs, tasks

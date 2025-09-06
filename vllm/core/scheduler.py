@@ -506,8 +506,8 @@ class Scheduler:
         self.num_cache_iters = 2 if self.use_async_output_proc else 1
         self.dull_iteration = 0
         
-        self.topk_bins = []
-        
+        self._current_bin_queue = deque()
+ 
         self.prev_no_swap_space = False
 
         self.cache_id = 0
@@ -1223,13 +1223,13 @@ class Scheduler:
         self,
         budget: SchedulingBudget,
         enable_chunking: bool = False,
-        k: int = 1,                 # 区间个数
-        max_swaps_per_iter: int = 1 # 每次“小迭代”允许的最大抢占数
+        k: int = 1,               
+        max_swaps_per_iter: int = 3,
+        bin_mode: Optional[str] = None,
     ) -> SchedulerConcordPreemptionV2Outputs:
         import math
         st_schedule_time = time.perf_counter()
 
-        # ----------- 持久化状态（首次使用时创建） -----------
         if not hasattr(self, "_cur_rank"): self._cur_rank = 0            # 当前执行到优先级序列里的第几个 bin
         if not hasattr(self, "_exec_order"): self._exec_order = []       # 按优先级排序后的“原始 bin 下标”列表
         if not hasattr(self, "_bin_bounds"): self._bin_bounds = []       # 原始下标 -> (start, end_open)
@@ -1239,10 +1239,9 @@ class Scheduler:
         if not hasattr(self, "_current_bounds"): self._current_bounds = (0, 0)
         if not hasattr(self, "_current_is_last"): self._current_is_last = False
 
-        # ----------- helpers -----------
         def _seq_len(sg: "SequenceGroup") -> int:
             try:
-                return int(sg.first_seq.get_prompt_len())
+                return int(sg.first_seq.get_prompt_len() + sg.first_seq.get_output_len())
             except Exception:
                 return 0
 
@@ -1263,8 +1262,8 @@ class Scheduler:
             return (start <= L < end_open) or (is_last_bin and L >= start)
 
         def _recompute_bins():
-            """完成一个“大迭代”后或首次，重算 bins 和执行顺序，并初始化第一个 bin 的状态。"""
             preemption_list = list(self.waiting) + list(self.swapped) + list(self.running)
+            # self.scheduler_config.max_num_seqs += 1
             if not preemption_list:
                 self._exec_order = []
                 self._bin_bounds = []
@@ -1274,42 +1273,51 @@ class Scheduler:
                 self._pending_swap_out_queue.clear()
                 return
 
-            lengths = [max(0, _seq_len(sg)) for sg in preemption_list]
-            max_len = max(512, max(1, max(lengths)))    # 给个下限，避免 width 过小
-            width = max(1, math.ceil(max_len / max(1, k)))
+            scored = [( _service_gain(sg), sg) for sg in preemption_list]
+            scored.sort(key=lambda x: x[0])
+            top_mk = [sg for _, sg in scored[:self.scheduler_config.max_num_seqs * k]]
 
-            # 原始 k 个区间（左闭右开，最后一个右闭）
-            raw_bounds = [(i * width, (i + 1) * width) for i in range(k)]
-            self._bin_bounds = raw_bounds
+            top_mk.sort(key=_seq_len)
+            total_reqs = len(top_mk)
+            mode = None
+            if mode == "length":
+                max_length = max(max(_seq_len(sg) for sg in top_mk), 1024)
+                bins = [[] for _ in range(k)]
+                for sg in top_mk:
+                    bin_idx = min(k - 1, math.floor(_seq_len(sg) / (max_length / k)))
+                    bins[bin_idx].append(sg)
+                # filter empty bins
+                bins = [b for b in bins if b]
+            else:
+                bins = []
+                cur_bin = []
+                for sg in top_mk:
+                    if len(cur_bin) < max(self.scheduler_config.max_num_seqs, total_reqs // k):
+                        cur_bin.append(sg)
+                    else:
+                        bins.append(cur_bin)
+                        cur_bin = [sg]
+                if cur_bin:
+                    bins.append(cur_bin)
 
-            # 放入区间（按原始下标）
-            bins = [[] for _ in range(k)]
-            for sg in preemption_list:
-                L = _seq_len(sg)
-                idx = min(L // width, k - 1)
-                bins[idx].append(sg)
-            self._bins_by_index = bins
-
-            # priority（示例：越“紧急”优先级越高，这里用 -sum(gain)）
             scores = []
             for i, blist in enumerate(bins):
                 if not blist:
                     scores.append((float("-inf"), i))
                 else:
-                    pri = -sum(_service_gain(sg) for sg in blist)
+                    pri = sum(_service_gain(sg) for sg in blist)
                     scores.append((pri, i))
 
-            # 按 priority 从高到低，过滤空 bin
-            scores.sort(key=lambda x: x[0], reverse=True)
+            scores.sort(key=lambda x: x[0])
             self._exec_order = [i for pri, i in scores if pri != float("-inf")]
             self._cur_rank = 0
+            self._bins_by_index = bins
+            self._bin_bounds = [(min(_seq_len(sg) for sg in b), 
+                                 max(_seq_len(sg) for sg in b)+1) for b in bins]
 
-            # 初始化到第一个 bin
-            _switch_to_bin(self._cur_rank, initialize=True)
-
-            # 便于调试
-            for rank, idx in enumerate(self._exec_order):
-                logger.info(f"[bin rank {rank}] raw_idx={idx} bounds={self._bin_bounds[idx]} size={len(self._bins_by_index[idx])}")
+            # 初始化第一个 bin
+            if self._exec_order:
+                _switch_to_bin(self._cur_rank, initialize=True)
 
         def _switch_to_bin(rank: int, initialize: bool = False):
             """切换到优先级序列中的第 rank 个 bin，只更新内部状态，不立刻调度。"""
@@ -1320,39 +1328,33 @@ class Scheduler:
             rank = rank % len(self._exec_order)
             exec_idx = self._exec_order[rank]  # 原始下标
             bounds = self._bin_bounds[exec_idx]
-            is_last_bin = (exec_idx == (k - 1))
+            bin_number = len(self._bins_by_index)
 
             # ========== 初始 current bin ==========
             cur = deque(self._bins_by_index[exec_idx])
             seen = set(id(x) for x in cur)
 
-            # running 中落在范围内的补进来
-            for sg in list(self.running):  # TODO waiting pool也可类似补充
-                if id(sg) in seen:
-                    continue
-                if _in_bounds(_seq_len(sg), bounds, is_last_bin):
-                    cur.append(sg)
-                    seen.add(id(sg))
-
             # ========== 如果 batch 不够，尝试 work stealing ==========
             left, right = exec_idx - 1, exec_idx + 1
             new_lower, new_upper = bounds  # 用于更新 bounds
 
-            while len(cur) < self.scheduler_config.max_num_seqs and (left >= 0 or right < k):
-                # 选择更接近 exec_idx 的 bin（优先左右交替，也可以按绝对差值）
+            logger.info(f"bin index length={len(self._bins_by_index)} exec_idx={exec_idx} left={left} right={right} cur_bin={len(cur)}")
+
+            while len(cur) < self.scheduler_config.max_num_seqs and (left >= 0 or right < bin_number):
                 candidates = []
                 if left >= 0:
                     candidates.append((abs(left - exec_idx), left))
-                if right < k:
+                if right < bin_number:
                     candidates.append((abs(right - exec_idx), right))
                 candidates.sort()
                 _, chosen_idx = candidates[0]
 
-                # 移动指针，避免重复选择
                 if chosen_idx < exec_idx:
                     left -= 1
                 else:
                     right += 1
+
+                logger.info(f"[work stealing] rank={rank} exec_idx={exec_idx} chosen_idx={chosen_idx} cur_bin={len(cur)}")
 
                 if len(self._bins_by_index[chosen_idx]) == 0:
                     # 该 bin 没有请求，跳过
@@ -1361,16 +1363,6 @@ class Scheduler:
                 # 把 chosen bin 的请求补进来
                 for sg in self._bins_by_index[chosen_idx]:
                     if id(sg) not in seen:
-                        cur.append(sg)
-                        seen.add(id(sg))
-
-                # running pool 中同样拉进来
-                bnd = self._bin_bounds[chosen_idx]
-                is_last = (chosen_idx == (k - 1))
-                for sg in list(self.running):
-                    if id(sg) in seen:
-                        continue
-                    if _in_bounds(_seq_len(sg), bnd, is_last):
                         cur.append(sg)
                         seen.add(id(sg))
 
@@ -1383,19 +1375,79 @@ class Scheduler:
             self._current_is_last = (new_upper == self._bin_bounds[-1][1])
             self._current_bin_queue = cur
 
-            # 生成 “需要逐步换出的 running”
             pend = deque()
             for sg in list(self.running):
-                if not _in_bounds(_seq_len(sg), (new_lower, new_upper), self._current_is_last):
+                if not _in_bounds(_seq_len(sg), self._current_bounds, self._current_is_last):
+                    # running 中不在 current bin 的，放到 pending swap out 里
                     pend.append(sg)
+                elif id(sg) not in seen:
+                    cur.append(sg)
+                    seen.add(id(sg))
             self._pending_swap_out_queue = pend
 
             if initialize:
-                logger.info(f"[init bin] rank={rank} exec_idx={exec_idx} bounds={bounds} cur_bin={len(cur)} pending_swap_out={len(pend)}")
+                logger.info(f"[init bin] rank={rank} exec_idx={exec_idx} bounds={self._current_bounds} cur_bin={len(cur)} pending_swap_out={len(pend)}")
 
-        # ----------------- 大迭代进度控制 -----------------
-        # 如果没有 exec_order（首次或上一轮结束），重算；如果上一轮已经走完所有 bin，也重算
-        if not self._exec_order or self._cur_rank >= len(self._exec_order):
+        def _recompute_bins_sliding_window():
+            """新的 bin 选择逻辑：先选 top-mk，再滑动窗口找最佳区间"""
+            preemption_list = list(self.waiting) + list(self.swapped) + list(self.running)
+            logger.info(f"[sliding window] preemption_list={len(preemption_list)}")
+            if not preemption_list:
+                self._exec_order = []
+                self._bin_bounds = []
+                self._bins_by_index = []
+                self._cur_rank = 0
+                self._current_bin_queue.clear()
+                self._pending_swap_out_queue.clear()
+                return
+
+            scored = [( _service_gain(sg), sg) for sg in preemption_list]
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top_mk = [sg for _, sg in scored[:self.scheduler_config.max_num_seqs * k]]
+            top_mk.sort(key=_seq_len)
+
+            best_sum, best_idx = float("-inf"), 0
+            batch_size = self.scheduler_config.max_num_seqs
+
+            if len(top_mk) >= batch_size:
+                cur_sum = sum(_service_gain(sg) for sg in top_mk[:batch_size])
+                best_sum, best_idx = cur_sum, 0
+
+                for i in range(batch_size, len(top_mk)):
+                    cur_sum += _service_gain(top_mk[i])
+                    cur_sum -= _service_gain(top_mk[i - batch_size])
+                    if cur_sum > best_sum:
+                        best_sum, best_idx = cur_sum, i - batch_size + 1
+
+                best_window = top_mk[best_idx:best_idx + batch_size]
+            else:
+                best_window = top_mk
+
+            logger.info(f"[sliding window] best_idx={best_idx} best_sum={best_sum} cur_bin={len(best_window)} preemption_list={len(preemption_list)} top_mk={len(top_mk)}")
+
+            self._current_bin_queue = deque(best_window)
+            seen = {id(sg) for sg in best_window}
+
+            if best_window:
+                self._current_bounds = (min(_seq_len(sg) for sg in best_window),
+                                        max(_seq_len(sg) for sg in best_window)+1)
+            else:
+                self._current_bounds = (0, 0)
+            self._current_is_last = True
+
+            pend = deque()
+            for sg in list(self.running):
+                if not _in_bounds(_seq_len(sg), self._current_bounds, self._current_is_last):
+                    # running 中不在 current bin 的，放到 pending swap out 里
+                    pend.append(sg)
+                elif id(sg) not in seen:
+                    self._current_bin_queue.append(sg)
+                    seen.add(id(sg))
+            self._pending_swap_out_queue = pend
+
+        if bin_mode == "sliding":   # 新模式
+            _recompute_bins_sliding_window()
+        elif not self._pending_swap_out_queue:                                           # 原模式
             _recompute_bins()
 
         # 无可调度对象，直接收尾
@@ -1417,7 +1469,7 @@ class Scheduler:
         prefill_result.num_lookahead_slots = self._get_num_lookahead_slots(is_prefill=True, enable_chunking=enable_chunking)
         swapped_in_result.num_lookahead_slots = self._get_num_lookahead_slots(is_prefill=False, enable_chunking=enable_chunking)
 
-        if not self._exec_order:
+        if not self._exec_order and bin_mode is None:
             # 空轮
             self.total_preemption_time += time.perf_counter() - st_schedule_time
             self._scheduler_running_outputs_cache[self.next_cache_id].reset()
@@ -1442,6 +1494,8 @@ class Scheduler:
                 self._current_bin_queue.appendleft(sg)
                 seen.add(id(sg))
 
+        # budget.max_num_seqs = len(self._current_bin_queue)  # 动态调整 batch size 上限
+
         # 这次能抢占的数量
         swaps_budget = max(0, int(max_swaps_per_iter))
         force_preemption_count = 0
@@ -1454,11 +1508,13 @@ class Scheduler:
             if sg not in self.running:
                 # 已经不在 running 了，跳过
                 continue
-            preempt_mode = self._preempt(sg, running_result.blocks_to_swap_out, PreemptionMode.SWAP)
-            if preempt_mode == PreemptionMode.SWAP:
-                running_result.swapped_out.append(sg)
-            elif preempt_mode == PreemptionMode.RECOMPUTE:
-                running_result.preempted.append(sg)
+            # logger.info(f"Swapping out request {sg.collection_id} in running 1")
+            if bin_mode is None:
+                preempt_mode = self._preempt(sg, running_result.blocks_to_swap_out, PreemptionMode.SWAP)
+                if preempt_mode == PreemptionMode.SWAP:
+                    running_result.swapped_out.append(sg)
+                elif preempt_mode == PreemptionMode.RECOMPUTE:
+                    running_result.preempted.append(sg)
             swaps_budget -= 1
             swapped_this_iter += 1
             force_preemption_count += 1
@@ -1466,11 +1522,10 @@ class Scheduler:
         # 等量回填：从 current_bin_queue 取出非 running 的请求，准备调度
         to_activate = []
         while len(to_activate) < swapped_this_iter and self._current_bin_queue:
-            sg = self._current_bin_queue.popleft()
-            if sg in self.running or (sg not in self.waiting and sg not in self.swapped):
-                # 已在运行，不占“回填额度”，继续找
-                continue
-            to_activate.append(sg)
+            sg: SequenceGroup = self._current_bin_queue.popleft()
+            if sg.first_seq.status == SequenceStatus.WAITING or \
+                sg.first_seq.status == SequenceStatus.SWAPPED:
+                to_activate.append(sg)
 
         # 同时，为了保证当前 bin 内“已在运行”的请求能继续 decode，把它们也加入“待处理列表”
         running_in_bin = [sg for sg in list(self.running) \
@@ -1478,6 +1533,11 @@ class Scheduler:
 
         # 注意：真正的分配/调度在下方统一处理
         process_list = to_activate + running_in_bin
+
+        logger.info(f"process_list={len(process_list)} to_activate={len(to_activate)} running_in_bin={len(running_in_bin)} swapped_this_iter={swapped_this_iter} swaps_budget_left={swaps_budget} pending_swap_out_left={len(self._pending_swap_out_queue)}")
+
+        if bin_mode == "sliding":
+            self.scheduler_config.max_num_seqs = max(self.scheduler_config.max_num_seqs, len(process_list))
 
         # ----------------- 资源预算与调度主逻辑（只处理 process_list） -----------------
         num_gpu_blocks_number = self.block_manager.get_max_gpu_num_blocks_number()
@@ -1558,38 +1618,14 @@ class Scheduler:
                 if seq_group.is_finished():
                     self._free_finished_seq_group(seq_group)
                     continue
+                
+                # logger.info(f"Swapping out request {sg.collection_id} in running 2")
                 preempt_mode = self._preempt(seq_group, running_result.blocks_to_swap_out, PreemptionMode.SWAP)
                 if preempt_mode == PreemptionMode.SWAP:
                     running_result.swapped_out.append(seq_group)
                 elif preempt_mode == PreemptionMode.RECOMPUTE:
                     running_result.preempted.append(seq_group)
                 force_preemption_count += 1
-
-        # ---------- allocate waiting ----------
-        for waiting_seq, num_new_tokens, num_lookahead_slots in waiting_scheduled:
-            remain_token_budget = budget.remaining_token_budget()
-            if remain_token_budget > 0:
-                more_new_tokens = 0
-                for seq in waiting_seq.get_seqs(status=SequenceStatus.WAITING):
-                    more_new_tokens += seq.get_num_new_tokens()
-                more_new_tokens -= num_new_tokens
-                add_tokens = min(more_new_tokens, remain_token_budget)
-                num_new_tokens += add_tokens
-                budget._num_batched_tokens += add_tokens
-
-            can_allocate = self.block_manager.can_allocate(waiting_seq, num_lookahead_slots=num_lookahead_slots)
-            if can_allocate == AllocStatus.NEVER:
-                for seq in waiting_seq.get_seqs(status=SequenceStatus.WAITING):
-                    seq.status = SequenceStatus.FINISHED_IGNORED
-                prefill_result.ignored_seq_groups.append(waiting_seq)
-                continue
-            elif can_allocate == AllocStatus.LATER:
-                continue
-
-            self.waiting.remove(waiting_seq)
-            waiting_scheduled_result = self._schedule_concord_prefills(
-                waiting_seq, num_new_tokens, num_new_seqs, enable_chunking)
-            prefill_result.seq_groups.append(waiting_scheduled_result.seq_group)
 
         # ---------- swap-in ----------
         for swapped_seq, num_new_tokens, num_lookahead_slots in swapped_scheduled:
@@ -1624,14 +1660,30 @@ class Scheduler:
                 running_result.decode_seq_groups_list.append(running_seq)
             self._append_slots(running_seq, running_result.blocks_to_copy, enable_chunking)
 
-        # ---------- 大迭代推进：若当前 bin 的 pending 全部清空，则切到下一个 bin ----------
-        if not self._pending_swap_out_queue:
-            # 切换到下一个 bin；如果完成一轮（访问完所有非空 bin），则重算
-            self._cur_rank += 1
-            if self._cur_rank >= len(self._exec_order):
-                _recompute_bins()  # 完整轮换 k 次后，重新计算 bin 顺序
-            else:
-                _switch_to_bin(self._cur_rank, initialize=True)
+        for waiting_seq, num_new_tokens, num_lookahead_slots in waiting_scheduled:
+            remain_token_budget = budget.remaining_token_budget()
+            if remain_token_budget > 0:
+                more_new_tokens = 0
+                for seq in waiting_seq.get_seqs(status=SequenceStatus.WAITING):
+                    more_new_tokens += seq.get_num_new_tokens()
+                more_new_tokens -= num_new_tokens
+                add_tokens = min(more_new_tokens, remain_token_budget)
+                num_new_tokens += add_tokens
+                budget._num_batched_tokens += add_tokens
+
+            can_allocate = self.block_manager.can_allocate(waiting_seq, num_lookahead_slots=num_lookahead_slots)
+            if can_allocate == AllocStatus.NEVER:
+                for seq in waiting_seq.get_seqs(status=SequenceStatus.WAITING):
+                    seq.status = SequenceStatus.FINISHED_IGNORED
+                prefill_result.ignored_seq_groups.append(waiting_seq)
+                continue
+            elif can_allocate == AllocStatus.LATER:
+                continue
+
+            self.waiting.remove(waiting_seq)
+            waiting_scheduled_result = self._schedule_concord_prefills(
+                waiting_seq, num_new_tokens, num_new_seqs, enable_chunking)
+            prefill_result.seq_groups.append(waiting_scheduled_result.seq_group)
 
         # ---------- 收尾 ----------
         if force_preemption_count > 0:
@@ -1856,7 +1908,7 @@ class Scheduler:
 
         assert (budget.num_batched_tokens <=
                 self.scheduler_config.max_num_batched_tokens)
-        assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+        # assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
 
         # Update waiting requests.
         self.waiting.extendleft(running_scheduled.preempted)
@@ -1924,7 +1976,7 @@ class Scheduler:
         """
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
-            max_num_seqs=self.scheduler_config.max_num_seqs,
+            max_num_seqs=max(len(self.running), self.scheduler_config.max_num_seqs),
         )
         # TODO(wei): for now we do not support lora in concord with chunked prefill
         curr_loras: Set[int] = set()
@@ -1940,7 +1992,7 @@ class Scheduler:
         
         assert (budget.num_batched_tokens <=
                 self.scheduler_config.max_num_batched_tokens)
-        assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+        # assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
 
         # Update waiting requests.
         self.waiting.extendleft(running_scheduled.preempted)
@@ -2030,7 +2082,7 @@ class Scheduler:
 
         assert (budget.num_batched_tokens <=
                 self.scheduler_config.max_num_batched_tokens)
-        assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+        # assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
 
         # Update waiting requests.
         self.waiting.extendleft(running_scheduled.preempted)
@@ -2591,7 +2643,7 @@ class Scheduler:
                 preemption_mode, self.num_cumulative_preemption + 1)
         self.num_cumulative_preemption += 1
         seq_group.num_cumulative_preemption += 1
-        logger.info(f"Sequence group {seq_group.collection_id}, seq_id: {seq_group.first_seq.seq_id}: {self.policy.get_priority(seq_group)} is preempted by {preemption_mode} mode.")
+        logger.info(f"Collection ID: {seq_group.collection_id}, Request ID: {seq_group.first_seq.seq_id}: {self.policy.get_priority(seq_group)} is preempted by {preemption_mode} mode.")
 
         if preemption_mode == PreemptionMode.RECOMPUTE:
             self._preempt_by_recompute(seq_group)

@@ -133,12 +133,12 @@ async def generate(request: Request) -> Response:
         request_output_length = 0
         async for request_output in results_generator:
             prompt = request_output.prompt
-            request_input_length += len(prompt)
+            request_input_length += len(request_output.prompt_token_ids)
             assert prompt is not None
             text_outputs = [
                 prompt + output.text for output in request_output.outputs
             ]
-            request_output_length += sum([len(output.text) for output in request_output.outputs])
+            request_output_length += sum([len(output.token_ids) for output in request_output.outputs])
             ret = {"text": text_outputs, "ttft": request_output.ttft,
                    "tbt": request_output.tbt, "service_gain": request_output.service_gain}
             yield (json.dumps(ret) + "\0").encode("utf-8")

@@ -208,7 +208,7 @@ class ConcordPolicy(BasePolicy):
     '''
     def __init__(
         self,
-        schedule_interval: int = 100,
+        schedule_interval: int = 50,
         penalty_factor: int = 1
     ) -> None:
         super().__init__(schedule_interval, penalty_factor)
@@ -262,23 +262,28 @@ class ConcordPolicy(BasePolicy):
         if seq_group.request_type == RequestType.LATENCY:
             if seq_group.concord_metrics.TTFT is not None and seq_group.concord_metrics.service_gain > 0:
                 predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-                decode_gain = (predict_output_len - decode_len) * 2
-                priority = seq_group.concord_metrics.service_gain + decode_gain * min(1, (seq_group.deadline / predict_finish_time)**self.penalty_factor)
+                decode_gain = (predict_output_len - decode_len) * 8
+                ratio = seq_group.deadline / predict_finish_time
+                ratio = max(1e-6, min(1.0, ratio))
+                priority = seq_group.concord_metrics.service_gain + decode_gain * min(1, ratio)**self.penalty_factor
             else:
                 predict_finish_prefill_time = cur_time + seq_group.TBT_constraint - seq_group.arrival_time
                 predict_finish_decode_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-                prefill_gain = input_len * min(1, (seq_group.TTFT_constraint / predict_finish_prefill_time)**self.penalty_factor)
-                decode_gain = predict_output_len * min(1, (seq_group.deadline / predict_finish_decode_time)**self.penalty_factor) * 2
+                prefill_ratio = seq_group.TTFT_constraint / predict_finish_prefill_time
+                prefill_ratio = max(1e-6, min(1.0, prefill_ratio))
+                decode_ratio = seq_group.deadline / predict_finish_decode_time
+                decode_ratio = max(1e-6, min(1.0, decode_ratio))
+                prefill_gain = input_len * min(1, prefill_ratio)**self.penalty_factor * 1
+                decode_gain = predict_output_len * min(1, decode_ratio)**self.penalty_factor * 8
                 priority = prefill_gain + decode_gain
         elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
             # priority = (seq_group.deadline - seq_group.TBT_constraint * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
             predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-            total_gain = input_len * 1 + predict_output_len * 2
-            priority = total_gain * min(1, (seq_group.deadline / predict_finish_time)**self.penalty_factor)
-        # if seq_group.request_type == RequestType.LATENCY:
-        #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
-        # elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
-        #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
+            total_gain = input_len * 1 + predict_output_len * 8
+            ratio = seq_group.deadline / predict_finish_time
+            ratio = max(1e-6, min(1.0, ratio))
+            priority = total_gain * min(1, ratio)**self.penalty_factor
+
         priority = -priority / remain_time
         
         concord_priority = (priority, predict_output_len - decode_len)

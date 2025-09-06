@@ -960,7 +960,7 @@ class SequenceGroup:
         decode_len = self.first_seq.get_output_len()
         
         prefill_weight = 1
-        decode_weight = 2
+        decode_weight = 8
     
         generated_prefill_tokens = self.concord_metrics.new_prefill_tokens
         generated_decode_tokens = self.concord_metrics.new_decode_tokens
@@ -985,7 +985,8 @@ class SequenceGroup:
             # in prefilling stage
             # the service gain is computed after TTFT is set
             if self.concord_metrics.service_gain == 0 and self.concord_metrics.TTFT is not None:
-                prefill_ratio = min(1, (self.TTFT_constraint / self.concord_metrics.TTFT)**penalty_factor)
+                prefill_ratio = self.TTFT_constraint / self.concord_metrics.TTFT
+                prefill_ratio = max(1e-6, min(1, prefill_ratio))**penalty_factor
                 service += prefill_ratio * prefill_len * prefill_weight
             # in decoding stage
             # the service gain is computed for each iteration
@@ -993,7 +994,8 @@ class SequenceGroup:
                 if desire_decode_len == 0:
                     service += 1 * decode_weight * generated_decode_tokens
                 else:
-                    decode_ratio = min(1, (decode_len / desire_decode_len)**penalty_factor)
+                    decode_ratio = decode_len / desire_decode_len
+                    decode_ratio = max(1e-6, min(1, decode_ratio))**penalty_factor
                     service += decode_ratio * decode_weight * generated_decode_tokens
             return service
       
