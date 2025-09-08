@@ -250,7 +250,8 @@ class RequestOutput:
         #     seq_group.concord_metrics.TTFT = time.time() - seq_group.concord_metrics.arrival_time
         if finished:
             seq_group.concord_metrics.TTLT = time.time() - seq_group.concord_metrics.arrival_time
-            seq_group.concord_metrics.service_gain += seq_group.service_compute(time.time())
+            # seq_group.concord_metrics.service_gain += seq_group.service_compute(time.time())
+            seq_group.concord_metrics.service_gain = seq_group.service_compute(time.time(), 1000)
         init_args = (seq_group.request_id, prompt, prompt_token_ids,
                      prompt_logprobs, outputs, finished, seq_group.metrics,
                      seq_group.lora_request, encoder_prompt,

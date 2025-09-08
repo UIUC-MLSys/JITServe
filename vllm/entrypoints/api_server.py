@@ -65,7 +65,7 @@ use_total_deadline = False
 use_all_node = False  # All-node vs super-node approach
 stage_ratio_method = "execution_time"  # "execution_time" or "output_length"
 collection_graph_set: Set[Graph] = set()  # Keep for backward compatibility
-dynamic_clustering = DynamicClustering()  # New clustering system for allnode method
+dynamic_clustering = DynamicClustering()  # New clustering system for both allnode and supernode methods
 collection_graph_unfinished_dict: Dict[int, ToTStructure] = dict()
 collection_deepresearch_unfinished_dict: Dict[int, DeepResearchStructure] = dict()
 
@@ -131,19 +131,16 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                     tot_structure.reset()
                 unfinished_graph = tot_structure.convert_to_unfinished_graph(
                     len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-                if use_all_node:
-                    # Use dynamic clustering for allnode method
-                    best_match = dynamic_clustering.find_best_match(unfinished_graph)
-                    if best_match and best_match.times:
-                        stage = len(unfinished_graph.nodes)
-                        if stage < len(best_match.times):
-                            return sum(best_match.times[:stage]) / sum(best_match.times)
-                        else:
-                            return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+                # Use dynamic clustering for both allnode and supernode methods
+                best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                if best_match and best_match.times:
+                    stage = len(unfinished_graph.nodes)
+                    if stage < len(best_match.times):
+                        return sum(best_match.times[:stage]) / sum(best_match.times)
                     else:
-                        return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
+                        return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
                 else:
-                    return predict_stage_ratio(unfinished_graph, collection_graph_set)
+                    return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
             else:  # deepresearch
                 if collection_id not in collection_deepresearch_unfinished_dict:
                     collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
@@ -153,18 +150,14 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                     deepresearch_structure.reset()
                 unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
                     len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-                if use_all_node:
-                    # Use dynamic clustering for allnode method
-                    best_match = dynamic_clustering.find_best_match(unfinished_graph)
-                    if best_match and best_match.times and stage_id < len(best_match.times):
-                        ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
-                        ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
-                        return max(ratio_1, ratio_2)
-                    else:
-                        return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                # Use dynamic clustering for both allnode and supernode methods
+                best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                if best_match and best_match.times and stage_id < len(best_match.times):
+                    ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
+                    ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                    return max(ratio_1, ratio_2)
                 else:
-                    return predict_deepresearch_stage_ratio(
-                        unfinished_graph, collection_graph_set, stage_id)
+                    return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
         return default_ratio
     elif graph_matching_mode == "online":
         # Dynamic graph matching (current implementation)
@@ -176,19 +169,16 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                 tot_structure.reset()
             unfinished_graph = tot_structure.convert_to_unfinished_graph(
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-            if use_all_node:
-                # Use dynamic clustering for allnode method
-                best_match = dynamic_clustering.find_best_match(unfinished_graph)
-                if best_match and best_match.times:
-                    stage = len(unfinished_graph.nodes)
-                    if stage < len(best_match.times):
-                        return sum(best_match.times[:stage]) / sum(best_match.times)
-                    else:
-                        return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+            # Use dynamic clustering for both allnode and supernode methods
+            best_match = dynamic_clustering.find_best_match(unfinished_graph)
+            if best_match and best_match.times:
+                stage = len(unfinished_graph.nodes)
+                if stage < len(best_match.times):
+                    return sum(best_match.times[:stage]) / sum(best_match.times)
                 else:
-                    return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
+                    return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
             else:
-                return predict_stage_ratio(unfinished_graph, collection_graph_set)
+                return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
         else:  # deepresearch
             if collection_id not in collection_deepresearch_unfinished_dict:
                 collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
@@ -198,18 +188,14 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                 deepresearch_structure.reset()
             unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
-            if use_all_node:
-                # Use dynamic clustering for allnode method
-                best_match = dynamic_clustering.find_best_match(unfinished_graph)
-                if best_match and best_match.times and stage_id < len(best_match.times):
-                    ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
-                    ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
-                    return max(ratio_1, ratio_2)
-                else:
-                    return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+            # Use dynamic clustering for both allnode and supernode methods
+            best_match = dynamic_clustering.find_best_match(unfinished_graph)
+            if best_match and best_match.times and stage_id < len(best_match.times):
+                ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
+                ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                return max(ratio_1, ratio_2)
             else:
-                return predict_deepresearch_stage_ratio(
-                    unfinished_graph, collection_graph_set, stage_id)
+                return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
     
     return default_ratio
 
@@ -334,8 +320,8 @@ async def generate(request: Request) -> Response:
                         if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
                             finished_graph = tot_structure.convert_to_graph()
                             collection_graph_set.add(finished_graph)
-                            if use_all_node:
-                                dynamic_clustering.add_finished_request(finished_graph)
+                            # Use dynamic clustering for both allnode and supernode methods
+                            dynamic_clustering.add_finished_request(finished_graph)
                         tot_structure.is_finished = True
                         
             elif graph_structure_type == "deepresearch":
@@ -349,8 +335,8 @@ async def generate(request: Request) -> Response:
                         if deepresearch_structure.stage_in_out_lengths and deepresearch_structure.stage_timings:
                             finished_graph = deepresearch_structure.convert_to_graph()
                             collection_graph_set.add(finished_graph)
-                            if use_all_node:
-                                dynamic_clustering.add_finished_request(finished_graph)
+                            # Use dynamic clustering for both allnode and supernode methods
+                            dynamic_clustering.add_finished_request(finished_graph)
                         deepresearch_structure.is_finished = True
 
     if stream:
@@ -385,8 +371,8 @@ async def generate(request: Request) -> Response:
                     if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
                         finished_graph = tot_structure.convert_to_graph()
                         collection_graph_set.add(finished_graph)
-                        if use_all_node:
-                            dynamic_clustering.add_finished_request(finished_graph)
+                        # Use dynamic clustering for both allnode and supernode methods
+                        dynamic_clustering.add_finished_request(finished_graph)
                     tot_structure.is_finished = True
                     
         elif graph_structure_type == "deepresearch":
@@ -400,8 +386,8 @@ async def generate(request: Request) -> Response:
                     if deepresearch_structure.stage_in_out_lengths and deepresearch_structure.stage_timings:
                         finished_graph = deepresearch_structure.convert_to_graph()
                         collection_graph_set.add(finished_graph)
-                        if use_all_node:
-                            dynamic_clustering.add_finished_request(finished_graph)
+                        # Use dynamic clustering for both allnode and supernode methods
+                        dynamic_clustering.add_finished_request(finished_graph)
                     deepresearch_structure.is_finished = True
 
     text_outputs = [prompt + output.text for output in final_output.outputs]
