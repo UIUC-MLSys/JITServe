@@ -5,10 +5,6 @@ from vllm.sampling_params import SamplingParams
 from vllm.sequence import Sequence, SequenceStatus
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
-from vllm.logger import init_logger
-
-logger = init_logger("vllm")
-
 class StopChecker:
     """LLMEngine helper class which separates out the logic involving stop
     checking. This checks things such as: whether the eos token was emitted,
@@ -40,16 +36,7 @@ class StopChecker:
        new_char_count is the number of chars added to the
            sequence's output text for the newly generated token
         """
-        # Primary check: Use client-specified output length to determine when to stop
-        # This replaces ALL other stop conditions when target_output_length is set
-        if hasattr(sampling_params, 'target_output_length') and sampling_params.target_output_length:
-            if seq.get_output_len() >= sampling_params.target_output_length:
-                logger.info(f"seq.get_output_len(): {seq.get_output_len()}, target_output_length: {sampling_params.target_output_length}")
-                seq.status = SequenceStatus.FINISHED_TARGET_LENGTH
-                return
-            # When target_output_length is set, only stop at target length - ignore all other conditions
-            return
-        
+
         # Check if the minimum number of tokens has been generated yet;
         # skip the stop checks if not
         if seq.get_output_len() < sampling_params.min_tokens:
@@ -61,7 +48,7 @@ class StopChecker:
             return
 
         # Fallback to original stop conditions if target_output_length not specified
-        # Check if the sequence has generated the EOS token.
+        # Check if the sequence has reached the target output length.
         if ((not sampling_params.ignore_eos)
                 and seq.get_last_token_id() == seq.eos_token_id):
             if seq.get_output_len() >= seq.real_output_len:
@@ -102,7 +89,6 @@ class StopChecker:
             seq.status = SequenceStatus.FINISHED_STOPPED
             seq.stop_reason = stop_str
             return
-
         # Check if the sequence has reached max_tokens.
         if seq.get_output_len() == sampling_params.max_tokens:
             seq.status = SequenceStatus.FINISHED_LENGTH_CAPPED

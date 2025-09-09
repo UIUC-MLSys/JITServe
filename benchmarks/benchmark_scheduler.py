@@ -102,12 +102,14 @@ def calculate_metrics(
                 ttft = outputs[i][req_idx].request_ttft
                 tbt_list = outputs[i][req_idx].request_tbt
                 ttlt = outputs[i][req_idx].request_latency
+
+                req_slo_constraint = tuple(slo * (outputs[i][req_idx].collection_id % 4 + 1) for slo in slo_constraint) if slo_constraint else None
                 
-                meets_ttft = (ttft <= slo_constraint[0]) if slo_constraint else True
-                meets_tbt = all(tbt <= slo_constraint[1] for tbt in tbt_list) if slo_constraint else True
-                meets_ttlt = (ttlt <= slo_constraint[2]) if slo_constraint else True
+                meets_ttft = (ttft <= req_slo_constraint[0]) if req_slo_constraint else True
+                meets_tbt = all(tbt <= req_slo_constraint[1] for tbt in tbt_list) if req_slo_constraint else True
+                meets_ttlt = (ttlt <= req_slo_constraint[2]) if req_slo_constraint else True
                 
-                if slo_constraint:
+                if req_slo_constraint:
                     if meets_ttft: slo_ttft_meet[task_type] += 1
                     if meets_tbt: slo_tbt_meet[task_type] += 1
                     if meets_ttlt: slo_ttlt_meet[task_type] += 1
@@ -524,6 +526,7 @@ async def benchmark(
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
     trace_pattern: Optional[str] = "hetero",  # e.g., "homo", "hetero", "random"
     output_pattern: Optional[str] = None,  # e.g., "same"
+    is_stream: bool = True,
 ):
     trace_len = len(trace)
     total_output_len = sum(
@@ -572,7 +575,7 @@ async def benchmark(
     elif trace_pattern == "hetero":
         print("Using hetero trace pattern for requests.")
         update_trace = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
-        total_input_len = sum(update_trace[i].prompt_len for i in range(len(update_trace)))
+        total_input_len = sum(update_trace[i].input_len for i in range(len(update_trace)))
         requests = []
         input_len = total_input_len // len(update_trace)
         vocab_size = tokenizer.vocab_size
@@ -580,7 +583,7 @@ async def benchmark(
         offsets = np.random.randint(0, vocab_size, size=num_prompts)
 
         for i, real_trace in enumerate(update_trace):
-            real_input_len = update_trace[i].prompt_len - num_special_tokens
+            real_input_len = update_trace[i].input_len - num_special_tokens
             inner_seq = (
                 (offsets[i] + i + np.arange(real_input_len)) % vocab_size
             ).tolist()
@@ -599,7 +602,7 @@ async def benchmark(
             ]
             prompt = tokenizer.decode(re_encoded_sequence)
             real_trace.prompt = prompt
-            real_trace.prompt_len = len(re_encoded_sequence)
+            real_trace.input_len = len(re_encoded_sequence)
             requests.append(real_trace)
     elif trace_pattern is None:
         print("Using real trace pattern for requests.")
@@ -615,7 +618,7 @@ async def benchmark(
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
-    test_request: RequestFormat = requests[0]
+    test_request: RequestInfo = requests[0]
     test_request.output_len = 10
     sampling_params = SamplingParams(
         n=n,              

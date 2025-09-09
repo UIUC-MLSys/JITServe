@@ -5,6 +5,7 @@ import argparse
 from sklearn.model_selection import train_test_split
 import numpy as np
 from similarity import Graph, Edge, Vertex, match_graph
+# TODO: add plot request stage ratios function
 from plot_request_stage_ratios import plot_stage_ratios
 
 def compute_average_normalized_list(normalized_lists):

@@ -37,10 +37,7 @@ from vllm.utils import (FlexibleArgumentParser, iterate_with_cancellation,
 from vllm.version import __version__ as VLLM_VERSION
 
 # Import tokenizer utilities
-try:
-    from vllm.transformers_utils.tokenizer import get_tokenizer
-except ImportError:
-    from backend_request_func import get_tokenizer
+from vllm.transformers_utils.tokenizer import get_tokenizer
 
 logger = init_logger("vllm.entrypoints.api_server")
 
@@ -171,8 +168,8 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
             # Use dynamic clustering for both allnode and supernode methods
             best_match = dynamic_clustering.find_best_match(unfinished_graph)
+            stage = len(unfinished_graph.nodes)
             if best_match and best_match.times:
-                stage = len(unfinished_graph.nodes)
                 if stage < len(best_match.times):
                     return sum(best_match.times[:stage]) / sum(best_match.times)
                 else:
@@ -236,7 +233,9 @@ async def generate(request: Request) -> Response:
     
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id
-    request_info["slo_constraint"] = tuple(request_dict["slo_constraint"])
+    slo_constraint = tuple(request_dict["slo_constraint"])
+    req_idx = request_info.get("collection_id", 0) % 4 + 1
+    request_info["slo_constraint"] = tuple(slo * req_idx for slo in slo_constraint)
     request_info = RequestInfo.from_json(request_info)
     request_id = random_uuid()
     
@@ -298,13 +297,9 @@ async def generate(request: Request) -> Response:
                 prompt + output.text for output in request_output.outputs
             ]
             request_output_length = sum([len(output.token_ids) for output in request_output.outputs])
-
-            # Get finish_reason from the first output (assuming single output)
-            finish_reason = request_output.outputs[0].finish_reason if request_output.outputs else None
             
             ret = {"text": text_outputs, "ttft": request_output.ttft,
-                   "tbt": request_output.tbt, "service_gain": request_output.service_gain,
-                   "finish_reason": finish_reason}
+                   "tbt": request_output.tbt, "service_gain": request_output.service_gain}
             yield (json.dumps(ret) + "\0").encode("utf-8")
             
         # Track collection completion for graph learning (regardless of matching mode)
@@ -317,7 +312,7 @@ async def generate(request: Request) -> Response:
 
                     if collection_finish:
                         # Only convert if we have valid data
-                        if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
+                        if tot_structure.current_stage_requests and tot_structure.stage_finish_time:
                             finished_graph = tot_structure.convert_to_graph()
                             collection_graph_set.add(finished_graph)
                             # Use dynamic clustering for both allnode and supernode methods

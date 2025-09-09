@@ -4,6 +4,7 @@ import time
 import argparse
 from sklearn.model_selection import train_test_split
 import numpy as np
+# TODO: add compare similarity function and plot request stage ratios function
 from compare_similarity import Graph, Edge, Vertex, match_graph
 from plot_request_stage_ratios import plot_stage_ratios
 

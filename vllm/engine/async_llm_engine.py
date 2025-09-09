@@ -309,7 +309,9 @@ class _AsyncLLMEngine(LLMEngine):
                 max_tbt_constraint = max(max_tbt_constraint, \
                                          scheduled_seq_group.seq_group.TBT_constraint)
             
-            if len(debug_info) != 0:
+            print_debug_info = False
+
+            if len(debug_info) != 0 and print_debug_info is True:
                 cur_time = time.time()
                 batch_execute_time = cur_time - self.last_execute_time
                 self.last_execute_time = cur_time
@@ -427,7 +429,7 @@ class _AsyncLLMEngine(LLMEngine):
                 assert len(
                     outputs
                 ) == 1, "Async postprocessor expects only a single output set"
-                logger.info("Async postprocessor is processing outputs in parallel with the GPU forward pass.")
+                # logger.info("Async postprocessor is processing outputs in parallel with the GPU forward pass.")
                 self._advance_to_next_step(
                     outputs[0], seq_group_metadata_list,
                     scheduler_outputs.scheduled_seq_groups)
