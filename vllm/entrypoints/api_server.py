@@ -130,8 +130,8 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
                     len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
                 # Use dynamic clustering for both allnode and supernode methods
                 best_match = dynamic_clustering.find_best_match(unfinished_graph)
+                stage = len(unfinished_graph.nodes)  # Define stage before the if block
                 if best_match and best_match.times:
-                    stage = len(unfinished_graph.nodes)
                     if stage < len(best_match.times):
                         return sum(best_match.times[:stage]) / sum(best_match.times)
                     else:
@@ -312,7 +312,8 @@ async def generate(request: Request) -> Response:
 
                     if collection_finish:
                         # Only convert if we have valid data
-                        if tot_structure.current_stage_requests and tot_structure.stage_finish_time:
+                        # if tot_structure.current_stage_requests and tot_structure.stage_finish_time:
+                        if tot_structure.stage_finish_time and tot_structure.stage_in_out_lengths:
                             finished_graph = tot_structure.convert_to_graph()
                             collection_graph_set.add(finished_graph)
                             # Use dynamic clustering for both allnode and supernode methods
@@ -363,7 +364,7 @@ async def generate(request: Request) -> Response:
 
                 if collection_finish:
                     # Only convert if we have valid data
-                    if tot_structure.output_input_ratio and tot_structure.stage_finish_time:
+                    if tot_structure.stage_finish_time and tot_structure.stage_in_out_lengths:
                         finished_graph = tot_structure.convert_to_graph()
                         collection_graph_set.add(finished_graph)
                         # Use dynamic clustering for both allnode and supernode methods
