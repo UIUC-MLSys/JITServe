@@ -3,11 +3,16 @@ import numpy as np
 import pandas as pd
 import random
 import os
+import sys
 from dataclasses import dataclass 
 from enum import Enum, IntEnum
 from transformers import PreTrainedTokenizerBase, AutoTokenizer
 from tqdm import tqdm
 from typing import Dict, List, Tuple
+
+# Import RequestInfo
+sys.path.append('../../')
+from vllm.request_info import RequestInfo
 
 support_datasets = ['alpaca', 'lmsys_chat', 'ToT', 'mix']
 throughput_hint_words = ['code', 'function', 'method', 'class', 'variable', 'python', 'test']
@@ -19,65 +24,6 @@ class RequestType(IntEnum):
     Throughput = 1
     Collective = 2
     
-    
-class RequestFormat:
-    '''
-    A class to represent a request.
-    '''
-    def __init__(
-        self, 
-        prompt: str,
-        output: str,
-        prompt_len: int,
-        output_len: int,
-        request_type: RequestType,
-        collection_id: int,
-        deliver_time: int,
-        deadline: float,
-        priority: int,
-    ) -> None:
-        self.prompt = prompt
-        self.output = output
-        self.prompt_len = prompt_len
-        self.output_len = output_len
-        self.request_type = request_type
-        self.collection_id = collection_id
-        self.deliver_time = deliver_time
-        self.deadline = deadline
-        self.priority = priority
-        
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'RequestFormat':
-        '''
-        Initialize the Request from a dictionary.
-        '''
-        return cls(
-            data["prompt"],
-            data["output"],
-            data["prompt_len"],
-            data["output_len"],
-            RequestType(data["request_type"]),
-            data["collection_id"],
-            data["deliver_time"],
-            data["deadline"],
-            data["priority"],
-        )
-    
-    def to_dict(self) -> Dict:
-        '''
-        Convert the request to a dictionary.
-        '''
-        return {
-            "prompt": self.prompt,
-            "output": self.output,
-            "prompt_len": self.prompt_len,
-            "output_len": self.output_len,
-            "request_type": self.request_type,
-            "collection_id": self.collection_id,
-            "deliver_time": self.deliver_time,
-            "deadline": self.deadline,
-            "priority": self.priority,
-        }
     
 
 class BaseDataset:
@@ -235,15 +181,29 @@ class BaseDataset:
         return priority
     
     
-    def _construct_request_list(self) -> List[RequestFormat]:
+    def _construct_request_list(self) -> List[RequestInfo]:
         '''
         Construct the request list.
         '''
         request_list = []
         for i in range(len(self.prompts)):
-            request = RequestFormat(self.prompts[i], self.outputs[i], self.prompts_len[i], self.outputs_len[i],
-                              self.request_type_list[i], i,
-                              self.deliver_time[i], self.deadline[i], self.priority[i])
+            # Create RequestInfo with proper parameters
+            default_slo_constraint = (1000.0, 1000.0, 5000.0)  # ttft, tbt, ttlt
+            request = RequestInfo(
+                request_type=self.request_type_list[i],
+                slo_constraint=default_slo_constraint,
+                client_id=0,  # Default client ID
+                collection_id=i,
+                deadline=int(self.deadline[i]),
+                input_len=self.prompts_len[i],
+                output_len=self.outputs_len[i],
+                prediction_task=None,
+                prompt=self.prompts[i],
+                output=self.outputs[i],
+                stage_id=0,  # Default stage ID for non-collective requests
+                request_id=i,
+                state=""  # Default state
+            )
             request_list.append(request)
         return request_list
     
@@ -266,7 +226,7 @@ class BaseDataset:
         return dataset
     
     @classmethod
-    def divide_by_rate(cls, dataset: List[RequestFormat], rate: List[float]) -> List[List[RequestFormat]]:
+    def divide_by_rate(cls, dataset: List[RequestInfo], rate: List[float]) -> List[List[RequestInfo]]:
         '''
         Divide the dataset into several parts by the rate.
         '''
@@ -484,7 +444,7 @@ class Trace:
             
     
     @classmethod
-    def load_trace(cls, trace_path: str) -> List[RequestFormat]:
+    def load_trace(cls, trace_path: str) -> List['RequestInfo']:
         '''
         Load the trace from a json file.
         '''
@@ -493,5 +453,7 @@ class Trace:
             dataset = json.load(f)
         request_list = []
         for req in dataset:
-            request_list.append(RequestFormat.from_dict(req))
+            # Convert trace format to RequestInfo
+            request_info = RequestInfo.from_json(req)
+            request_list.append(request_info)
         return request_list

@@ -35,15 +35,15 @@ def construct_graph_set_super(input_data, output_data, times, ratios):
     graph_set = set()
     for inputs, outputs, time1, ratio in zip(input_data, output_data, times, ratios):
         start_time = time.time()
-        vertices = []
+        nodes = []
         edges = []
         # Construct the first stage of the graph with a single node
-        vertices.append(Vertex(1))
+        nodes.append(Vertex(1))
         edges.append(Edge((sum(outputs[:3])/inputs[0])))
         for idx in range(1, len(inputs), 2):
-            vertices.append(Vertex(1))
+            nodes.append(Vertex(1))
             edges.append(Edge((sum(outputs[idx*3:idx*3+6])/sum(inputs[idx:idx+2]))))
-        graph_set.add(Graph(vertices=vertices, edges=edges, total_time=time1, stage_ratio=ratio))
+        graph_set.add(Graph(nodes=nodes, edges=edges, total_time=time1, stage_ratio=ratio))
         elapsed_time = time.time() - start_time  # Calculate elapsed time
         elapsed_times.append(elapsed_time)
     
@@ -58,16 +58,16 @@ def construct_graph_set_all_node(input_data, output_data, times, ratios):
     graph_set = set()
     for inputs, outputs, time1, ratio in zip(input_data, output_data, times, ratios):
         start_time = time.time()
-        vertices = []
+        nodes = []
         edges = []
         for idx in range(len(inputs)):
-            vertices.append(Vertex(1))
+            nodes.append(Vertex(1))
             edges.append(Edge(outputs[idx*3]/inputs[idx]))
-            vertices.append(Vertex(1))
+            nodes.append(Vertex(1))
             edges.append(Edge(outputs[idx*3+1]/inputs[idx]))
-            vertices.append(Vertex(1))
+            nodes.append(Vertex(1))
             edges.append(Edge(outputs[idx*3+2]/inputs[idx]))
-        graph_set.add(Graph(vertices=vertices, edges=edges, total_time=time1, stage_ratio=ratio))
+        graph_set.add(Graph(nodes=nodes, edges=edges, total_time=time1, stage_ratio=ratio))
         elapsed_time = time.time() - start_time  # Calculate elapsed time
         elapsed_times.append(elapsed_time)
 
@@ -80,11 +80,11 @@ def match_graph_set(stages_train_set: set[Graph], stages_test_set: set[Graph], s
     time_benchmark = {}
     for i, entry in enumerate(stages_test_set):
         matched_graphs = []
-        for stage_idx in range(len(entry.vertices)-1):
+        for stage_idx in range(len(entry.nodes)-1):
             start_time = time.time()
 
             new_graph = Graph(
-                vertices=entry.vertices[:stage_idx + 1],
+                nodes=entry.nodes[:stage_idx + 1],
                 edges=entry.edges[:stage_idx + 1],
                 total_time=entry.total_time,
                 stage_ratio=entry.stage_ratio,
@@ -122,11 +122,11 @@ def match_graph_set_all_node(stages_train_set: set[Graph], stages_test_set: set[
     time_benchmark = {}
     for i, entry in enumerate(stages_test_set):
         matched_graphs = []
-        for stage_idx in range(0, len(entry.vertices)-3, 3):
+        for stage_idx in range(0, len(entry.nodes)-3, 3):
             start_time = time.time()
 
             new_graph = Graph(
-                vertices=entry.vertices[:stage_idx + 1],
+                nodes=entry.nodes[:stage_idx + 1],
                 edges=entry.edges[:stage_idx + 1],
                 total_time=entry.total_time,
                 stage_ratio=entry.stage_ratio,

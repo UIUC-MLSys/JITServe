@@ -34,7 +34,8 @@ except ImportError:
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, TaskOutput,
-                              RequestOutput, Trace, RequestFormat, BaseDataset, RequestType)
+                              RequestOutput, Trace, BaseDataset, RequestType)
+from vllm.request_info import RequestInfo
 
 @dataclass
 class BenchmarkMetrics:
@@ -505,7 +506,7 @@ async def benchmark(
     base_url: str,
     model: str,
     tokenizer: PreTrainedTokenizerBase,
-    trace: List[RequestFormat],
+    trace: List[RequestInfo],
     logprobs: Optional[int],
     num_prompts: int,
     n: int,
@@ -638,9 +639,11 @@ async def benchmark(
     if test_input.request.request_type == RequestType.Collective:
         test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
                                                                          model_name=model, 
-                                                                         tot_structure=tot_structure)
+                                                                         tot_structure=tot_structure,
+                                                                         penalty_factor=penalty_factor,
+                                                                         client_deadline=200)
     else:
-        test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model)
+        test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model, client_deadline=200)
     if not test_output[0].success:
         raise ValueError(
             "Initial test run failed - Please make sure benchmark arguments "
@@ -687,10 +690,11 @@ async def benchmark(
                     client_deadline=5000,
                     api_url=api_url,
                     tot_structure=tot_structure,
+                    is_stream=is_stream,
                     pbar=pbar,
                 )
             )
-    )
+        )
 
     results: List[Tuple[List[RequestOutput], List[TaskOutput]]] = await asyncio.gather(*client_tasks)
     outputs: List[RequestOutput] = [output for result in results 
@@ -724,7 +728,7 @@ def main(args: argparse.Namespace):
 
     model_id = args.model
     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
-    trace: List[RequestFormat] = Trace.load_trace(args.trace_path)
+    trace: List[RequestInfo] = Trace.load_trace(args.trace_path)
 
     if args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"
@@ -791,6 +795,7 @@ def main(args: argparse.Namespace):
             slo_constraint=tuple(map(float, args.slo_constraint.split(","))),
             penalty_factor=args.penalty_factor,
             tot_structure=(args.tot_thoughts, args.tot_rounds),
+            is_stream=args.is_stream,
         ))
 
 
@@ -837,8 +842,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--burst",
-        type=bool,
-        default=False,
+        choices=["True", "False"],
+        default="False",
         help="Specify to use burst request arrvial pattern.",
     )
     parser.add_argument(
@@ -950,6 +955,12 @@ if __name__ == '__main__':
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--is-stream",
+        choices=["True", "False"],
+        default="True",
+        help="Whether to use streaming mode for requests (default: True)",
+    )
+    parser.add_argument(
         "--trust-remote-code",
         action="store_true",
         help="Trust remote code from huggingface",
@@ -1012,4 +1023,9 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+    
+    # Convert string arguments to boolean
+    args.burst = args.burst == "True"
+    args.is_stream = args.is_stream == "True"
+    
     main(args)

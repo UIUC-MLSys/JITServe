@@ -11,12 +11,13 @@ from copy import deepcopy
 from tqdm import tqdm
 from typing import List, Tuple, AsyncGenerator, Optional
 from vllm import SamplingParams
-from .trace import RequestFormat, RequestType
+from .trace import RequestType
+from vllm.request_info import RequestInfo
 
 class RequestInput:
     def __init__(
         self, 
-        request: RequestFormat,
+        request: RequestInfo,
         slo_constraint: Tuple[float, float, float],
         sampling_params: SamplingParams,
         client_id: int,
@@ -94,18 +95,20 @@ def parse_output(output: str, input_length: int) -> str:
 
 
 async def get_request(
-    input_requests: List[RequestFormat],
+    input_requests: List[RequestInfo],
     poisson_lambda: float = 1000.0,
     burst: bool = False,
-) -> AsyncGenerator[RequestFormat, None]:
+) -> AsyncGenerator[RequestInfo, None]:
     request_num = len(input_requests)
     input_requests = iter(input_requests)
     
     # if burst using the burst pattern
     if burst:
         print("Using BurstGPT pattern.")
-        df = pd.read_csv('/home/exouser/Concord/benchmarks/trace/BurstGPT_1.csv')
+        df = pd.read_csv('/home/jovyan/workspace/Concord/benchmarks/trace/BurstGPT_1.csv')
         timestamps = df['Timestamp'].tolist()
+        baseline_timestamp = timestamps[99]
+        timestamps = [ts - baseline_timestamp for ts in timestamps[100:100 + request_num]]
         original_req_rate = request_num * 1000 / timestamps[request_num - 1]
         target_req_rate = 1 / poisson_lambda * 1000
         timestamps = [int(timestamp * original_req_rate / target_req_rate) for timestamp in timestamps]
@@ -153,6 +156,7 @@ async def send_collective_request(
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
             "stream": is_stream,
+            "target_output_length": request_info.request.output_len,  # Send output length to server
         }
         st = time.perf_counter()
         
@@ -165,6 +169,8 @@ async def send_collective_request(
             new_payload["sampling_params"]["n"] = 1
             new_payload["sampling_params"]["best_of"] = 1
             new_payload["sampling_params"]["max_tokens"] = 256
+            # Use the output_len from request as target for stopping
+            new_payload["target_output_length"] = request_info.request.output_len
             
             output = RequestOutput()
             output.request_input = input_prompt
@@ -238,6 +244,8 @@ async def send_collective_request(
             new_payload["sampling_params"]["n"] = 1
             new_payload["sampling_params"]["best_of"] = 1
             new_payload["sampling_params"]["max_tokens"] = 256
+            # Use the output_len from request as target for stopping
+            new_payload["target_output_length"] = request_info.request.output_len
             input_length = len(new_payload['request_info']['prompt'])
             
             output = RequestOutput()
@@ -376,7 +384,8 @@ async def send_request(
             "slo_constraint": request_info.slo_constraint,
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
-            "stream": is_stream
+            "stream": is_stream,
+            "target_output_length": request_info.request.output_len,  # Send output length to server
         }
         st = time.perf_counter()
         
@@ -435,7 +444,7 @@ async def send_request(
 
 
 async def client_simulator(
-    input_requests: List[RequestFormat], 
+    input_requests: List[RequestInfo], 
     slo_constraint: Tuple[float, float, float],
     penalty_factor: int,
     poisson_lambda: float,
@@ -446,6 +455,7 @@ async def client_simulator(
     api_url: str,
     tot_structure: Tuple[int, int],
     model_name: str,
+    is_stream: bool = True,
     pbar: Optional[tqdm] = None,
     ) -> Tuple[List[RequestOutput], List[TaskOutput]]:
     '''
@@ -461,9 +471,9 @@ async def client_simulator(
         deadline = client_deadline
 
         if request.request_type == RequestType.Collective:
-            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, deadline, pbar)))
+            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, deadline, pbar, is_stream)))
         else:
-            tasks.append(asyncio.create_task(send_request(request_info, model_name, deadline, pbar)))
+            tasks.append(asyncio.create_task(send_request(request_info, model_name, deadline, pbar, is_stream)))
         
     outputs: List[List[RequestOutput]] = await asyncio.gather(*tasks)
     finish_time = []
