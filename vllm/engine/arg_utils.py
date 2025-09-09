@@ -184,6 +184,9 @@ class EngineArgs:
     mm_processor_kwargs: Optional[Dict[str, Any]] = None
     scheduling_policy: Literal["fcfs", "priority", "vtc"] = "fcfs"
     penalty_factor :int = 1
+    top_k_selection: int = 1
+    max_swaps_per_iter: int = 3
+    search_strategy: Optional[Literal["sliding_window", "length_bin"]] = "sliding_window"
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -858,6 +861,27 @@ class EngineArgs:
             help="The penalty factor to be applied to the service gain and concord priority"
         )
 
+        parser.add_argument(
+            '--top-k-selection',
+            type=int,
+            default=1,
+            help="The top-k*batch size selection to be applied to the service gain and concord priority"
+        )
+
+        parser.add_argument(
+            '--search-strategy',
+            choices=['sliding_window', 'length_bin'],
+            default="sliding_window",
+            help='The search strategy to use for concord length scheduling method.'
+        )
+
+        parser.add_argument(
+            '--max-swaps-per-iter',
+            type=int,
+            default=3,
+            help='The maximum number of swaps to perform in each scheduling iteration when using concord scheduling method.'
+        )
+
         return parser
 
     @classmethod
@@ -1078,6 +1102,9 @@ class EngineArgs:
                              and parallel_config.use_ray),
             policy=self.scheduling_policy,
             penalty_factor=self.penalty_factor,
+            top_k_selection=self.top_k_selection,
+            search_strategy=self.search_strategy,
+            max_swaps_per_iter=self.max_swaps_per_iter
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,

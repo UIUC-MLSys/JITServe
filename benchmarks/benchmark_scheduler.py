@@ -814,7 +814,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="benchmarks/dataset/trace/longcontext.json",
+        default="benchmarks/dataset/trace/lmsys.json",
         help="Path to the trace file.",
     )
     parser.add_argument(

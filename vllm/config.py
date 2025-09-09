@@ -1024,7 +1024,11 @@ class SchedulerConfig:
                  multi_step_stream_outputs: bool = False,
                  send_delta_data: bool = False,
                  policy: str = "fcfs",
-                 penalty_factor: int = 1) -> None:
+                 penalty_factor: int = 1,
+                 top_k_selection: int = 1,
+                 max_swaps_per_iter: int = 3,
+                 search_strategy: str = "sliding_window",
+                 ) -> None:
         if max_num_batched_tokens is None:
             if enable_chunked_prefill:
                 if num_scheduler_steps > 1:
@@ -1074,6 +1078,9 @@ class SchedulerConfig:
         self.send_delta_data = send_delta_data
         self.policy = policy
         self.penalty_factor = penalty_factor
+        self.top_k_selection = top_k_selection
+        self.max_swaps_per_iter = max_swaps_per_iter
+        self.search_strategy = search_strategy
         self._verify_args()
 
     def _verify_args(self) -> None:
