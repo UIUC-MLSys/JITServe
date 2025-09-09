@@ -2060,10 +2060,14 @@ class Scheduler:
         if self.scheduler_config.policy == "vtc":
             result = self._schedule_vtc()
         elif self.scheduler_config.chunked_prefill_enabled:
-            if self.scheduler_config.policy != "fcfs" and self.policy.update_schedule_count() and self._test_enough_swap_space():
-                result = self._schedule_concord()
+            if self.scheduler_config.policy != "fcfs":
+                if self.policy.update_schedule_count() and self._test_enough_swap_space():
+                    result = self._schedule_concord()
+                else:
+                    result = self._schedule_chunked_prefill()
             else:
-                result = self._schedule_chunked_prefill()
+                # FCFS policy should use concord scheduling to get proper priority-based behavior
+                result = self._schedule_concord()
         else:
             result = self._schedule_default()
             
