@@ -125,10 +125,6 @@ class SchedulerContext:
                       scheduler_outputs: SchedulerOutputs, is_async: bool,
                       is_last_step: bool,
                       is_first_step_output: Optional[bool]):
-        # logger.info(f"metadata: {len(seq_group_metadata_list)} to output cache")
-        # if len(seq_group_metadata_list) != 0:
-        #     logger.info(f"outputs: {len(outputs[0].outputs)}")
-        #     assert len(outputs[0].outputs) == len(seq_group_metadata_list)
         self.output_queue.append(
             OutputData(outputs=outputs,
                        seq_group_metadata_list=seq_group_metadata_list,
@@ -1015,7 +1011,8 @@ class LLMEngine:
         seq_group.embeddings = outputs[0].embeddings
 
         for seq in seq_group.get_seqs():
-            seq.status = SequenceStatus.FINISHED_STOPPED
+            if seq.get_output_len() >= seq.real_output_len:
+                seq.status = SequenceStatus.FINISHED_STOPPED
 
         return
 
@@ -1806,6 +1803,10 @@ class LLMEngine:
             num_generation_tokens_iter = (
                 actual_num_batched_tokens - num_prompt_tokens_iter +
                 num_generation_tokens_from_prefill_groups)
+            if num_generation_tokens_iter < 0:
+                # This can happen if the scheduler outputs are empty, but we
+                # still have some finished seq groups.
+                num_generation_tokens_iter = 0
 
         # Spec decode, if enabled, emits specialized metrics from the worker in
         # sampler output.

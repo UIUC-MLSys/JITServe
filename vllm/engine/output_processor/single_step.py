@@ -118,11 +118,19 @@ class SingleStepOutputProcessor(SequenceGroupOutputProcessor):
         seq = seq_group.first_seq
         if not is_async:
             seq.append_token_id(sample.output_token, sample.logprobs)
-        if sampling_params.detokenize and self.detokenizer:
-            new_char_count = self.detokenizer.decode_sequence_inplace(
-                seq, sampling_params)
-        else:
-            new_char_count = 0
+        try:
+            if sampling_params.detokenize and self.detokenizer:
+                new_char_count = self.detokenizer.decode_sequence_inplace(
+                    seq, sampling_params)
+            else:
+                new_char_count = 0
+        except IndexError as e:
+            is_finished = seq_group.is_finished()
+            is_prefill = seq_group.is_prefill()
+            logger.error(f"Error accessing output logprobs: {e} for sequence {seq_group.collection_id}")
+            logger.error(f"Sequence finished: {is_finished}, prefill: {is_prefill}")
+            new_char_count = 1
+        
         self.stop_checker.maybe_stop_sequence(
             seq,
             new_char_count,

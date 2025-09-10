@@ -85,8 +85,8 @@ class RequestInfo:
         '''
         # Extract values from the JSON object
         request_type = RequestType(json_obj["request_type"])  # Convert to RequestType enum
-        slo_constraint = json_obj["slo_constraint"]
-        client_id = json_obj["client_id"]
+        slo_constraint = json_obj.get("slo_constraint", (0.0, 0.0, 0.0))  # Default to (0.0, 0.0, 0.0) if not provided
+        client_id = json_obj.get("client_id", 0)  # Default to 0 if not provided
         collection_id = json_obj["collection_id"]
         deadline = json_obj["deadline"]
         output_len = json_obj["output_len"]

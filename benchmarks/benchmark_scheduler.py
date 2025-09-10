@@ -8,10 +8,12 @@ import os
 import random
 import sys
 import time
+import torch
 import warnings
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from torch.profiler import profile, record_function, ProfilerActivity
 from typing import Any, AsyncGenerator, Collection, Dict, List, Optional, Tuple
 from tqdm import tqdm
 from datasets import load_dataset
@@ -59,11 +61,12 @@ class BenchmarkMetrics:
     mean_e2el_ms: List[float]
     median_e2el_ms: List[float]
     percentiles_e2el_ms: List[List[Tuple[float, float]]]
+    request_details: List[Dict[str, Any]] = field(default_factory=list)   # 新增字段
 
 def calculate_metrics(
-    outputs: List[List[RequestOutput]],
+    outputs: List[List["RequestOutput"]],
     dur_s: float,
-    tokenizer: PreTrainedTokenizerBase,
+    tokenizer: "PreTrainedTokenizerBase",
     selected_percentiles: List[float],
     slo_constraint: Optional[Tuple[float, float, float]] = None,    # (ttft, tbt, ttlt)
     time_window_seconds: int = 60,
@@ -99,18 +102,21 @@ def calculate_metrics(
                 ttft = outputs[i][req_idx].request_ttft
                 tbt_list = outputs[i][req_idx].request_tbt
                 ttlt = outputs[i][req_idx].request_latency
+
+                req_slo_constraint = tuple(slo * (outputs[i][req_idx].collection_id % 4 + 1) for slo in slo_constraint) if slo_constraint else None
                 
-                meets_ttft = (ttft <= slo_constraint[0]) if slo_constraint else True
-                meets_tbt = all(tbt <= slo_constraint[1] for tbt in tbt_list) if slo_constraint else True
-                meets_ttlt = (ttlt <= slo_constraint[2]) if slo_constraint else True
+                meets_ttft = (ttft <= req_slo_constraint[0]) if req_slo_constraint else True
+                meets_tbt = all(tbt <= req_slo_constraint[1] for tbt in tbt_list) if req_slo_constraint else True
+                meets_ttlt = (ttlt <= req_slo_constraint[2]) if req_slo_constraint else True
                 
-                if slo_constraint:
+                if req_slo_constraint:
                     if meets_ttft: slo_ttft_meet[task_type] += 1
                     if meets_tbt: slo_tbt_meet[task_type] += 1
                     if meets_ttlt: slo_ttlt_meet[task_type] += 1
                     
                     if (meets_ttft and meets_tbt and task_type == 0) or \
-                        (meets_ttlt and (task_type == 1 or task_type == 2)):
+                        (meets_ttlt and task_type == 1) or \
+                        (outputs[i][req_idx].finish_before_ddl and task_type == 2):
                         request_slo_meet[task_type] += 1
                         request_slo_meet[3] += 1
                         
@@ -142,11 +148,23 @@ def calculate_metrics(
                 e2el_data[task_type].append(ttlt)
                 e2el_data[3].append(ttlt)  # Total
 
+                avg_tbt = np.mean(tbt_list) if tbt_list else 0.0
+                meet_tbt_count = sum(tbt <= slo_constraint[1] for tbt in tbt_list)
+                total_tbt_count = len(tbt_list)
+
                 request_metrics.append({
-                    "input_length": request_input_token_length,
-                    "output_length": request_output_token_length,
-                    "TTFT": ttft,
-                    "TBT": tbt_list,
+                    "collection_id": outputs[i][req_idx].collection_id,
+                    "request_type": task_type,
+                    "input_len": request_input_token_length,
+                    "output_len": request_output_token_length,
+                    "ttft": ttft,
+                    "avg_tbt": avg_tbt,
+                    "ttlt": ttlt,
+                    "meet_ttft": meets_ttft,
+                    "meet_tbt": meets_tbt,
+                    "meet_tbt_count": meet_tbt_count,
+                    "total_tbt_count": total_tbt_count,                    
+                    "meet_ttlt": meets_ttlt,
                 })
 
     if request_completed[3] == 0:
@@ -196,6 +214,7 @@ def calculate_metrics(
         mean_e2el_ms=e2el_means,
         median_e2el_ms=e2el_medians,
         percentiles_e2el_ms=e2el_percentiles,
+        request_details=request_metrics,   # 保存请求详细信息
     )
 
     return metrics
@@ -285,7 +304,8 @@ def calculate_task_metrics(
         percentiles_task_latency_s=latency_percentiles,
     )
 
-def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics, time_window_seconds: float) -> None:
+def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics, 
+                            time_window_seconds: float, w_prefill: int = 1, w_decode: int = 8) -> None:
     request_types = ["Latency", "Throughput", "Collective", "Total"]
     separator = "{s:{c}^{n}}".format(s='', n=80, c='-')
     header_separator = "{s:{c}^{n}}".format(s='', n=80, c='=')
@@ -305,18 +325,67 @@ def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics
     print("{:<40} {:<20.2f}".format("Total Token Throughput (tokens/s)", metrics.total_token_throughput))
     print(separator)
 
+    # 初始化统计
+    type_prefill_token = [0.0, 0.0, 0.0, 0.0]
+    type_decode_token = [0.0, 0.0, 0.0, 0.0]
+    type_weighted_token = [0.0, 0.0, 0.0, 0.0]
+    type_total_weighted = [0.0, 0.0, 0.0, 0.0]
+
+    for req in metrics.request_details:
+        rtype = req["request_type"]  # 0=Latency, 1=Throughput, 2=Collective
+
+        # prefill / decode token goodput 按请求类型规则
+        if rtype == 0:  # Latency-sensitive
+            prefill_tokens = req["input_len"] if req["meet_ttft"] else 0
+            decode_tokens = req["meet_tbt_count"]
+        else:  # Throughput / Collective
+            if req["meet_ttlt"]:
+                prefill_tokens = req["input_len"]
+                decode_tokens = req["output_len"]
+            else:
+                prefill_tokens = 0
+                decode_tokens = 0
+
+        weighted_tokens = w_prefill * prefill_tokens + w_decode * decode_tokens
+        total_weighted_tokens = w_prefill * req["input_len"] + w_decode * req["output_len"]
+
+        # 累加各类别
+        type_prefill_token[rtype] += prefill_tokens
+        type_decode_token[rtype] += decode_tokens
+        type_weighted_token[rtype] += weighted_tokens
+        type_total_weighted[rtype] += total_weighted_tokens
+
+        # 累加总计
+        type_prefill_token[3] += prefill_tokens
+        type_decode_token[3] += decode_tokens
+        type_weighted_token[3] += weighted_tokens
+        type_total_weighted[3] += total_weighted_tokens
+
     # 请求级统计表格
-    print("{:<15} {:<10} {:<10} {:<10} {:<10} {:<10}".format(
-        "Type", "Total", "Completed", "SLO Met", "Throughput", "Goodput"))
+    print("{:<15} {:<10} {:<10} {:<10} {:<10} {:<10} {:<15}".format(
+        "Type", "Total", "Completed", "SLO Met", "SLO Attain", "Throughput", "Goodput"))
     print(separator)
     for i in range(4):
-        print("{:<15} {:<10} {:<10} {:<10} {:<10.2f} {:<10.2f}".format(
+        slo_attain = (metrics.request_slo_meet[i] / metrics.request_num[i] if metrics.request_num[i] > 0 else 0.0)
+        print("{:<15} {:<10} {:<10} {:<10} {:<10.2f} {:<10.2f} {:<15.2f}".format(
             request_types[i],
             metrics.request_num[i],
             metrics.request_completed[i],
             metrics.request_slo_meet[i],
+            slo_attain,
             metrics.request_throughput[i],
             metrics.request_goodput[i]
+        ))
+    print(separator)
+
+    print("{:<15} {:<15} {:<15} {:<15}".format("Type", "Prefill Gpt", "Decode Gpt", "Weighted Gpt"))
+    print(separator)
+    for i in range(4):
+        prefill_gp = type_prefill_token[i] / metrics.duration
+        decode_gp = type_decode_token[i] / metrics.duration
+        weighted_gp = type_weighted_token[i] / metrics.duration
+        print("{:<15} {:<15.2f} {:<15.2f} {:<15.2f}".format(
+            request_types[i], prefill_gp, decode_gp, weighted_gp
         ))
     print(separator)
 
@@ -402,6 +471,37 @@ def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics
     print_time_window_gain(metrics)
     print(header_separator)
 
+    print("\nPer-Request Metrics:")
+    print("{:<15} {:<10} {:<10} {:<10} {:<10} {:<10} {:<12} {:<12} {:<15} {:<12}".format(
+        "CollectionID", "InLen", "OutLen", "TTFT", "AvgTBT", "TTLT",
+        "Meet_TTFT", "Meet_TBT", "Meet_TBT_Ratio", "Meet_TTLT"
+    ))
+    print(separator)
+    for req in metrics.request_details:
+        if req["request_type"] == 0:
+            meet_ttft = str(req["meet_ttft"])
+            meet_tbt = str(req["meet_tbt"])
+            meet_tbt_ratio = f"{req['meet_tbt_count']}/{req['total_tbt_count']}"
+            meet_ttlt = "\\"
+        else:  # request_type == 1 or 2
+            meet_ttft = "\\"
+            meet_tbt = "\\"
+            meet_tbt_ratio = "\\"
+            meet_ttlt = str(req["meet_ttlt"])
+
+        print("{:<15} {:<10} {:<10} {:<10.2f} {:<10.2f} {:<10.2f} {:<12} {:<12} {:<15} {:<12}".format(
+            req["collection_id"],
+            req["input_len"],
+            req["output_len"],
+            req["ttft"],
+            req["avg_tbt"],
+            req["ttlt"],
+            meet_ttft,
+            meet_tbt,
+            meet_tbt_ratio,
+            meet_ttlt,
+        ))
+    print(separator)
 
 async def benchmark(
     api_url: str,
@@ -424,18 +524,102 @@ async def benchmark(
     slo_constraint: Tuple[float, float, float], # (ttft, tbt, ttlt)
     penalty_factor: int,
     tot_structure: Tuple[int, int],             # (tot_thoughts, tot_rounds)
+    trace_pattern: Optional[str] = "hetero",  # e.g., "homo", "hetero", "random"
+    output_pattern: Optional[str] = None,  # e.g., "same"
     is_stream: bool = True,
 ):
     trace_len = len(trace)
+    total_output_len = sum(
+        (item.output_len * 14 if item.request_type == RequestType.Collective else item.output_len)
+        for item in trace
+    )
+    total_request_number = sum(
+        (14 if item.request_type == RequestType.Collective else 1)
+        for item in trace
+    )
+    average_output_len = total_output_len // total_request_number
     # deepcopy
-    requests = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
-    
+    if trace_pattern == "homo":
+        print("Using homo trace pattern for requests.")
+        update_trace = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
+        total_input_len = sum(update_trace[i].prompt_len for i in range(len(update_trace)))
+        requests = []
+        input_len = total_input_len // len(update_trace)
+        vocab_size = tokenizer.vocab_size
+        num_special_tokens = tokenizer.num_special_tokens_to_add()
+        real_input_len = input_len - num_special_tokens
+        offsets = np.random.randint(0, vocab_size, size=num_prompts)
+
+        for i, real_trace in enumerate(update_trace):
+            inner_seq = (
+                (offsets[i] + i + np.arange(real_input_len)) % vocab_size
+            ).tolist()
+            token_sequence = inner_seq
+            prompt = tokenizer.decode(token_sequence)
+            # After decoding the prompt we have to encode and decode it again.
+            # This is done because in some cases N consecutive tokens
+            # give a string tokenized into != N number of tokens.
+            # For example for GPT2Tokenizer:
+            # [6880, 6881] -> ['Ġcalls', 'here'] ->
+            # [1650, 939, 486] -> ['Ġcall', 'sh', 'ere']
+            # To avoid uncontrolled change of the prompt length,
+            # the encoded sequence is truncated before being decode again.
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[
+                :real_input_len
+            ]
+            prompt = tokenizer.decode(re_encoded_sequence)
+            real_trace.prompt = prompt
+            real_trace.prompt_len = len(re_encoded_sequence)
+            
+            requests.append(real_trace)
+    elif trace_pattern == "hetero":
+        print("Using hetero trace pattern for requests.")
+        update_trace = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
+        total_input_len = sum(update_trace[i].input_len for i in range(len(update_trace)))
+        requests = []
+        input_len = total_input_len // len(update_trace)
+        vocab_size = tokenizer.vocab_size
+        num_special_tokens = tokenizer.num_special_tokens_to_add()
+        offsets = np.random.randint(0, vocab_size, size=num_prompts)
+
+        for i, real_trace in enumerate(update_trace):
+            real_input_len = update_trace[i].input_len - num_special_tokens
+            inner_seq = (
+                (offsets[i] + i + np.arange(real_input_len)) % vocab_size
+            ).tolist()
+            token_sequence = inner_seq
+            prompt = tokenizer.decode(token_sequence)
+            # After decoding the prompt we have to encode and decode it again.
+            # This is done because in some cases N consecutive tokens
+            # give a string tokenized into != N number of tokens.
+            # For example for GPT2Tokenizer:
+            # [6880, 6881] -> ['Ġcalls', 'here'] ->
+            # [1650, 939, 486] -> ['Ġcall', 'sh', 'ere']
+            # To avoid uncontrolled change of the prompt length,
+            # the encoded sequence is truncated before being decode again.
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[
+                :real_input_len
+            ]
+            prompt = tokenizer.decode(re_encoded_sequence)
+            real_trace.prompt = prompt
+            real_trace.input_len = len(re_encoded_sequence)
+            requests.append(real_trace)
+    elif trace_pattern is None:
+        print("Using real trace pattern for requests.")
+        requests = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
+
+    if output_pattern == "same":
+        for id, request in enumerate(requests):
+            request.output_len = average_output_len
+            request.collection_id = id
+
     for id, request in enumerate(requests):
         request.collection_id = id
 
     # Get the first request to validate the correctness
     print("Starting initial single prompt test run...")
     test_request: RequestInfo = requests[0]
+    test_request.output_len = 10
     sampling_params = SamplingParams(
         n=n,              
         temperature=0.0,
@@ -520,7 +704,6 @@ async def benchmark(
                             for output in result[0]]
     tasks: List[TaskOutput] = [task_output for result in results
                             for task_output in result[1]]
-
     benchmark_duration = time.perf_counter() - benchmark_start_time
 
     metrics = calculate_metrics(
@@ -639,7 +822,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--trace-path",
         type=str,
-        default="benchmarks/dataset/trace/longcontext.json",
+        default="benchmarks/dataset/trace/lmsys.json",
         help="Path to the trace file.",
     )
     parser.add_argument(

@@ -21,22 +21,23 @@ class BasePolicy(ABC):
         self,
         schedule_interval: int,
         penalty_factor: int = 1,
-        interval_update_ratio: float = 0.5,
+        window_size: int = 10,   # for interval calculation
     ) -> None:
         # Dictionary to store sequence groups by collection_id
-        self.seq_group_dict: Dict[int, List[SequenceGroup]] = {}    # collection_id             -> sequence_group
-        self.seq_group_slo_dict: Dict[str, float] = {}              # sequence_group.request_id -> slo_gain
-        self.collection_MADD_ratio: Dict[int, float] = {}           # collection_id             -> MADD_ratio
+        self.seq_group_dict: Dict[int, List["SequenceGroup"]] = {}
+        self.seq_group_slo_dict: Dict[str, float] = {}
+        self.collection_MADD_ratio: Dict[int, float] = {}
         
         # Record the time between two scheduling rounds
         self.num_schedule_count = 0
         self.schedule_interval = schedule_interval
-        self.interval_update_ratio = interval_update_ratio
-        
-        self.last_schedule_time = time.time()
-        self.interval_time = -1
         self.penalty_factor = penalty_factor
         
+        # interval related
+        self.last_schedule_time = None
+        self.intervals: Deque[float] = deque(maxlen=window_size)
+        self.interval_time = None  # average interval time
+
     def update_schedule_count(self) -> bool:
         '''
         Update the number of scheduler calls.
@@ -51,13 +52,22 @@ class BasePolicy(ABC):
         
     def update_interval_time(self, cur_time: float) -> None:
         '''
-        Update the interval time between two scheduler.
+        Update the interval time between two scheduler calls.
         '''
-        if self.interval_time == -1:
-            self.interval_time = 2
+        if self.last_schedule_time is None:
+            self.last_schedule_time = cur_time
+            self.intervals.append(0.02)
         else:
-            self.interval_time = self.interval_time * self.interval_update_ratio + (1 - self.interval_update_ratio) * (cur_time - self.last_schedule_time)
-        self.last_schedule_time = cur_time
+            new_interval = (cur_time - self.last_schedule_time) / self.schedule_interval
+            self.intervals.append(new_interval)
+            self.last_schedule_time = cur_time
+        
+        # 求平均
+        if self.intervals:
+            self.interval_time = sum(self.intervals) / len(self.intervals)
+        else:
+            self.interval_time = 0.02
+            
      
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         '''
@@ -208,7 +218,7 @@ class ConcordPolicy(BasePolicy):
     '''
     def __init__(
         self,
-        schedule_interval: int = 20,
+        schedule_interval: int = 50,
         penalty_factor: int = 1
     ) -> None:
         super().__init__(schedule_interval, penalty_factor)
@@ -219,70 +229,77 @@ class ConcordPolicy(BasePolicy):
         
     def allocation_control(self, seq_group: SequenceGroup) -> float:
         max_remain_time = 0
+        unit_time = self.interval_time if self.interval_time else 0.02
+        #unit_time = seq_group.TBT_constraint
         for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
             peer_predict_output_len = peer_seq_group.predict_output_length
             peer_decode_len = peer_seq_group.seqs[0].get_decode_len()
-            peer_remain_time = peer_seq_group.TBT_constraint * (peer_predict_output_len - peer_decode_len)
+            peer_remain_time = unit_time * (peer_predict_output_len - peer_decode_len)
             max_remain_time = max(max_remain_time, peer_remain_time)
             
         return max_remain_time
     
-    def get_priority(
-        self, 
-        seq_group: SequenceGroup
-    ) -> float:
-        '''
-        Calculate the priority for the given sequence group based on the SLO policy.
-        The priority is determined by the weighted decay of the real and expected output lengths,
-        adjusted for the scheduling interval and task type.
-        '''
-        # Starvation Prevent:
-        # every 2000 out of 20000 iterations (%10 time) will apply fcfs
-        # time_interval = self.schedule_interval * 1000
-        # if self.num_schedule_count % time_interval < int(time_interval * 0.1):
-        #     return (0, seq_group.arrival_time)
+    def get_priority(self, seq_group: SequenceGroup) -> float:
+        """
+        Calculate scheduling priority using Concord policy.
+        Now uses dynamic `interval_time` instead of fixed TBT constraint.
+        """
 
-        # avoid duplicate calculation
+        # 如果之前算过就直接返回
         if self.seq_group_slo_dict.get(seq_group.request_id) is not None:
             return self.seq_group_slo_dict[seq_group.request_id]
-        
-        # Notw(wei): update the predict output length if it is not default value (1024)
-        seq_group.predict_output_length = seq_group.request_info.output_len
-        
-        cur_time = time.time()
-        decode_len = seq_group.seqs[0].get_decode_len()
-        input_len = seq_group.seqs[0].get_prompt_len()
-        predict_output_len = seq_group.predict_output_length
-        
-        remain_time = seq_group.TBT_constraint * (predict_output_len - decode_len)
-        if seq_group.request_type == RequestType.COLLECTIVE:
-            remain_time = self.allocation_control(seq_group)
-        remain_time = max(remain_time, 0.001)
 
+        cur_time = time.time()
+        input_len = seq_group.seqs[0].get_prompt_len()
+        decode_len = seq_group.seqs[0].get_decode_len()
+        predict_output_len = seq_group.request_info.output_len
+        remain_len = predict_output_len - decode_len
+        #TODO: should we consider the case when remain_len <= 0?
+
+        # 用 interval_time 替代 TBT_constraint
+        unit_time = self.interval_time if self.interval_time else 0.02
+        # unit_time = seq_group.TBT_constraint
+        remain_time = unit_time * remain_len
+        serve_time = cur_time - seq_group.arrival_time
+        if seq_group.request_type == RequestType.COLLECTIVE:
+            remain_time = max(self.allocation_control(seq_group), 0.001)
+        else:
+            remain_time = max(remain_time, 0.001)
+
+        def _safe_ratio(numer: float, denom: float) -> float:
+            """Clamp ratio between 1e-6 and 1.0 to avoid blowups."""
+            return max(1e-6, min(1.0, numer / denom))
+
+        priority = 0.0
         if seq_group.request_type == RequestType.LATENCY:
+            # 如果已经有 TTFT 和 service_gain，说明进入 decode 阶段
             if seq_group.concord_metrics.TTFT is not None and seq_group.concord_metrics.service_gain > 0:
-                predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-                decode_gain = (predict_output_len - decode_len) * 2
-                priority = seq_group.concord_metrics.service_gain + decode_gain * min(1, (seq_group.deadline / predict_finish_time)**self.penalty_factor)
+                predict_finish = serve_time + remain_time
+                ratio = _safe_ratio(seq_group.deadline, predict_finish)
+                decode_gain = remain_len * 8
+                priority = seq_group.concord_metrics.service_gain + decode_gain * ratio**self.penalty_factor
+
             else:
-                predict_finish_prefill_time = cur_time + seq_group.TBT_constraint - seq_group.arrival_time
-                predict_finish_decode_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-                prefill_gain = input_len * min(1, (seq_group.TTFT_constraint / predict_finish_prefill_time)**self.penalty_factor)
-                decode_gain = predict_output_len * min(1, (seq_group.deadline / predict_finish_decode_time)**self.penalty_factor) * 2
+                # prefill 阶段
+                predict_finish_prefill = serve_time + unit_time
+                predict_finish_decode = serve_time + remain_time
+
+                prefill_ratio = _safe_ratio(seq_group.TTFT_constraint, predict_finish_prefill)
+                decode_ratio = _safe_ratio(seq_group.deadline, predict_finish_decode)
+
+                prefill_gain = input_len * prefill_ratio**self.penalty_factor
+                decode_gain = predict_output_len * decode_ratio**self.penalty_factor * 8
                 priority = prefill_gain + decode_gain
-        elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
-            # priority = (seq_group.deadline - seq_group.TBT_constraint * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
-            predict_finish_time = cur_time + seq_group.TBT_constraint * (predict_output_len - decode_len) - seq_group.arrival_time
-            total_gain = input_len * 1 + predict_output_len * 2
-            priority = total_gain * min(1, (seq_group.deadline / predict_finish_time)**self.penalty_factor)
-        # if seq_group.request_type == RequestType.LATENCY:
-        #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
-        # elif seq_group.request_type == RequestType.THROUGHPUT or seq_group.request_type == RequestType.COLLECTIVE:
-        #     priority = (seq_group.deadline - seq_group.TBT_constraint / 2 * (predict_output_len - decode_len)) + seq_group.arrival_time - cur_time
-        priority = -priority / remain_time
-        
-        concord_priority = (priority, predict_output_len - decode_len)
+
+        elif seq_group.request_type in (RequestType.THROUGHPUT, RequestType.COLLECTIVE):
+            predict_finish = serve_time + unit_time * remain_len
+            ratio = _safe_ratio(seq_group.deadline, predict_finish)
+            total_gain = input_len + predict_output_len * 8
+            priority = total_gain * ratio**self.penalty_factor
+
+        density = priority / remain_time
+        concord_priority = (-density, remain_len)
+
         self.seq_group_slo_dict[seq_group.request_id] = concord_priority
         seq_group.slo_priority = concord_priority
-        
         return concord_priority

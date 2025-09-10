@@ -6,11 +6,14 @@
 # bs=32, arrival_rate=4.0, penalty_factor=2, slo_constraint="1,0.1,10", num_prompts=10000
 
 # 定义测试参数
-policies=("concord" "sjf" "fcfs" "vllm")
-rates=(3.0)
-batch_sizes=(32)
-penalty_factors=(2)
-output_dir="benchmark_results"
+policies=("concord")
+rates=(4.0)
+batch_sizes=(16)
+penalty_factors=(1)
+search_strategy="sliding_window"
+top_k_selection=3
+#output_dir="batch_profile_results_debug"
+output_dir="batch_profile_decay_llama"
 #model="Qwen/Qwen2.5-14B-Instruct"
 model="meta-llama/Llama-3.1-8B-Instruct"
 
@@ -44,6 +47,8 @@ for rate in "${rates[@]}"; do
                         --enable-chunked-prefill False \
                         --penalty-factor "$penalty_factor" \
                         --max-num-seqs "$batch_size" \
+                        --search-strategy "$search_strategy" \
+                        --top-k-selection "$top_k_selection" \
                         --model "$model" &
                 elif [ "$policy" = "vtc" ]; then
                     python3 vllm/entrypoints/api_server.py \
@@ -51,6 +56,18 @@ for rate in "${rates[@]}"; do
                         --enable-chunked-prefill False \
                         --penalty-factor "$penalty_factor" \
                         --max-num-seqs "$batch_size" \
+                        --search-strategy "$search_strategy" \
+                        --top-k-selection "$top_k_selection" \
+                        --model "$model" &
+                elif [ "$policy" = "concord-precise" ]; then
+                    python3 vllm/entrypoints/api_server.py \
+                        --scheduling-policy "concord" \
+                        --disable-prediction \
+                        --enable-chunked-prefill True \
+                        --penalty-factor "$penalty_factor" \
+                        --max-num-seqs "$batch_size" \
+                        --search-strategy "$search_strategy" \
+                        --top-k-selection "$top_k_selection" \
                         --model "$model" &
                 else
                     python3 vllm/entrypoints/api_server.py \
@@ -58,6 +75,8 @@ for rate in "${rates[@]}"; do
                         --enable-chunked-prefill True \
                         --penalty-factor "$penalty_factor" \
                         --max-num-seqs "$batch_size" \
+                        --search-strategy "$search_strategy" \
+                        --top-k-selection "$top_k_selection" \
                         --model "$model" &
                 fi
                 server_pid=$!
@@ -69,7 +88,7 @@ for rate in "${rates[@]}"; do
                 # 运行性能测试
                 echo "启动客户端..."
                 #output_file="${output_dir}/exp_qwen_${policy}_${rate}_${batch_size}_${penalty_factor}.log"
-                output_file="${output_dir}/test_${policy}.log"
+                output_file="${output_dir}/test.log"
                 python3 benchmarks/benchmark_scheduler.py \
                     --model "$model" \
                     --policy "$policy" \
@@ -77,7 +96,7 @@ for rate in "${rates[@]}"; do
                     --penalty-factor "$penalty_factor" \
                     --batch-size "$batch_size" \
                     --slo-constraint "1,0.1,10" \
-                    --num-prompts 10 > "$output_file" 2>&1
+                    --num-prompts 200 > "$output_file" 2>&1
 
                 # 停止服务器
                 echo "停止服务器..."
@@ -93,3 +112,5 @@ for rate in "${rates[@]}"; do
 done
 
 echo -e "\n所有测试完成！结果保存在 $output_dir/ 目录"
+
+#todo: control output length

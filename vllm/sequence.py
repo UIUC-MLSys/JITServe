@@ -73,9 +73,8 @@ class SequenceStatus(enum.IntEnum):
     # as a finished status.
     FINISHED_STOPPED = 3
     FINISHED_LENGTH_CAPPED = 4
-    FINISHED_TARGET_LENGTH = 5
-    FINISHED_ABORTED = 6
-    FINISHED_IGNORED = 7
+    FINISHED_ABORTED = 5
+    FINISHED_IGNORED = 6
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -87,8 +86,6 @@ class SequenceStatus(enum.IntEnum):
             finish_reason = "stop"
         elif status == SequenceStatus.FINISHED_LENGTH_CAPPED:
             finish_reason = "length"
-        elif status == SequenceStatus.FINISHED_TARGET_LENGTH:
-            finish_reason = "target_length"
         elif status == SequenceStatus.FINISHED_ABORTED:
             finish_reason = "abort"
         elif status == SequenceStatus.FINISHED_IGNORED:
@@ -494,6 +491,7 @@ class Sequence:
         self.data = SequenceData.from_seqs(self.prompt_token_ids)
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
+        self.real_output_len = 0
 
         self.status = SequenceStatus.WAITING
         self.stop_reason: Union[int, str, None] = None
@@ -772,9 +770,13 @@ class SequenceGroup:
         self.prediction_task = request_info.prediction_task
         self.real_output_len = request_info.real_output_len
         self.request_info = request_info
+        self.input_len = request_info.input_len
         self.concord_metrics = RequestConcordMetrics(time.time())
 
         self.cached_request_output = None
+
+        for seq in self.seqs:
+            seq.real_output_len = self.real_output_len
 
     @property
     def prompt(self) -> Optional[str]:
@@ -978,7 +980,8 @@ class SequenceGroup:
             # in prefilling stage
             # the service gain is computed after TTFT is set
             if self.concord_metrics.service_gain == 0 and self.concord_metrics.TTFT is not None:
-                prefill_ratio = min(1, (self.TTFT_constraint / self.concord_metrics.TTFT)**penalty_factor)
+                prefill_ratio = self.TTFT_constraint / self.concord_metrics.TTFT
+                prefill_ratio = max(1e-6, min(1, prefill_ratio))**penalty_factor
                 service += prefill_ratio * prefill_len * prefill_weight
             # in decoding stage
             # the service gain is computed for each iteration
@@ -986,7 +989,8 @@ class SequenceGroup:
                 if desire_decode_len == 0:
                     service += 1 * decode_weight * generated_decode_tokens
                 else:
-                    decode_ratio = min(1, (decode_len / desire_decode_len)**penalty_factor)
+                    decode_ratio = decode_len / desire_decode_len
+                    decode_ratio = max(1e-6, min(1, decode_ratio))**penalty_factor
                     service += decode_ratio * decode_weight * generated_decode_tokens
             return service
       
