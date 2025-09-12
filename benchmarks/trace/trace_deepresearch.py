@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # Import RequestInfo from vllm.request_info
 import sys
-sys.path.append('../')
+sys.path.append('../../')
 from vllm.request_info import RequestInfo
 
 

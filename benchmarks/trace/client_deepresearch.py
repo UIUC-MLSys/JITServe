@@ -12,7 +12,7 @@ from typing import List, Tuple, AsyncGenerator, Optional, Dict, Any
 from tqdm.asyncio import tqdm as async_tqdm
 from vllm import SamplingParams
 
-from trace_deepresearch import (
+from .trace_deepresearch import (
     RequestType, DeepResearchCollectiveRequest,
     DeepResearchStage, DeepResearchRequest
 )
@@ -284,7 +284,8 @@ async def send_deepresearch_collective_request(
     # Apply penalty if deadline is exceeded
     total_deadline = slo_constraint[2] * collective_request.stage_num
     if collective_output.total_latency > total_deadline:
-        penalty = min(1, (total_deadline / collective_output.total_latency) ** penalty_factor)
+        # penalty = min(1, (total_deadline / collective_output.total_latency) ** penalty_factor)
+        penalty = 1 if total_deadline >= collective_output.total_latency else 0
         for stage_output in collective_output.stage_outputs:
             for request_output in stage_output.stage_outputs:
                 request_output.request_service_gain *= penalty

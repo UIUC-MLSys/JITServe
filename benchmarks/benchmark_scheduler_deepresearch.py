@@ -19,11 +19,11 @@ from vllm import SamplingParams
 from vllm.sampling_params import RequestOutputKind
 
 # Import DeepResearch modules
-from trace_deepresearch import (
+from trace.trace_deepresearch import (
     DeepResearchTrace, DeepResearchCollectiveRequest, RequestType
 )
 from vllm.request_info import RequestInfo
-from client_deepresearch import (
+from trace.client_deepresearch import (
     deepresearch_client_simulator, CollectiveOutput, StageOutput, RequestOutput
 )
 
@@ -391,7 +391,7 @@ async def benchmark_deepresearch(
     )
     
     # Run test
-    from client_deepresearch import send_deepresearch_collective_request
+    from trace.client_deepresearch import send_deepresearch_collective_request
     
     test_output = await send_deepresearch_collective_request(
         collective_request=test_request,
