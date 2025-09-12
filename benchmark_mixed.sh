@@ -16,25 +16,6 @@ model="meta-llama/Llama-3.1-8B-Instruct"
 request_ratios="1.0,1,1"
 num_prompts="3000"
 
-# 解析命令行参数
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --request_ratios)
-            request_ratios="$2"
-            shift 2
-            ;;
-        --num_prompts)
-            num_prompts="$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown parameter: $1"
-            echo "Usage: $0 [--request_ratios num_1,num_2,num_3] [--num_prompts N]"
-            exit 1
-            ;;
-    esac
-done
-
 # 创建输出目录
 mkdir -p "$output_dir"
 
@@ -90,16 +71,21 @@ for rate in "${rates[@]}"; do
                 echo "开始测试：策略=$policy, 速率=$rate, 批大小=$batch_size, 惩罚因子=$penalty_factor"
                 echo "========================================"
 
-                # 计算到达率
+                # 计算到达率和请求数
                 if [[ $num_deep_research -gt 0 ]]; then
                     # 计算deepresearch和scheduler的到达率
                     rate_deepresearch=$(python3 -c "print($rate * ($num_deep_research / $num_prompts))")
                     rate_scheduler=$(python3 -c "print($rate - $rate_deepresearch)")
+                    # 计算lmsys请求数
+                    num_lmsys=$(python3 -c "print($num_prompts - $num_deep_research)")
                     echo "Deepresearch到达率: $rate_deepresearch"
                     echo "Scheduler到达率: $rate_scheduler"
+                    echo "LMSYS请求数: $num_lmsys"
                 else
                     rate_scheduler=$rate
+                    num_lmsys=$num_prompts
                     echo "Scheduler到达率: $rate_scheduler"
+                    echo "LMSYS请求数: $num_lmsys"
                 fi
 
                 # 启动服务器
@@ -154,7 +140,7 @@ for rate in "${rates[@]}"; do
                 # benchmark_scheduler.py
                 scheduler_output_file="${output_dir}/scheduler_${policy}_${rate}_${batch_size}_${penalty_factor}.log"
                 if [[ -n "$request_ratios" ]]; then
-                    # 使用生成的trace文件
+                    # 使用生成的trace文件，使用num_lmsys作为num_prompts
                     python3 benchmarks/benchmark_scheduler.py \
                         --model "$model" \
                         --policy "$policy" \
@@ -162,12 +148,13 @@ for rate in "${rates[@]}"; do
                         --penalty-factor "$penalty_factor" \
                         --batch-size "$batch_size" \
                         --slo-constraint "1,0.1,10" \
+                        --num-prompts "$num_lmsys" \
                         --trace-path "$trace_file" > "$scheduler_output_file" 2>&1 &
                 else
                     # 使用默认lmsys.json，需要指定num_prompts
                     prompts_arg=""
                     if [[ -n "$num_prompts" ]]; then
-                        prompts_arg="--num-prompts $num_prompts"
+                        prompts_arg="--num-prompts $num_lmsys"
                     else
                         prompts_arg="--num-prompts 200"
                     fi
