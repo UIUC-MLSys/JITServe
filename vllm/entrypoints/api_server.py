@@ -24,9 +24,9 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.launcher import serve_http
 from vllm.graph.similarity import (Graph, ToTStructure, DeepResearchStructure, 
                                       predict_stage_ratio, predict_deepresearch_stage_ratio,
-                                      is_tot_request, is_deepresearch_request,
                                       Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern,
                                       DynamicClustering)
+from vllm.graph.deepresearch_trace_reader import read_deepresearch_traces
 from vllm.logger import init_logger
 from vllm.prediction.prediction import load_model, async_predict
 from vllm.request_info import RequestInfo, RequestType
@@ -48,6 +48,9 @@ engine = None
 # Prediction model
 use_prediction = False
 use_default_length = False
+
+# Deepresearch base graphs for graph matching
+deepresearch_base_graphs = []
 prediction_model = None
 prediction_tokenizer = None
 
@@ -91,7 +94,7 @@ def send_and_update_request_info(request_info: RequestInfo, prompt: str):
         if result_len:
             request_info.output_len = result_len
 
-def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id: int, stage_id: int = 0, accumulate_stage_ratio: float = 0.0) -> float:
+def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt: str, collection_id: int, stage_id: int = 0, accumulate_stage_ratio: float = 0.0) -> float:
     """Calculate stage ratio based on graph matching mode and structure type."""
     global graph_matching_mode, graph_structure_type, use_total_deadline, use_all_node
     global collection_graph_set, dynamic_clustering, collection_graph_unfinished_dict, collection_deepresearch_unfinished_dict
@@ -141,10 +144,10 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
             else:  # deepresearch
                 if collection_id not in collection_deepresearch_unfinished_dict:
                     collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
-                        Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern, use_all_node, stage_ratio_method)
+                        num_stages, requests_per_stage, use_all_node, stage_ratio_method)
                 deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
-                if deepresearch_structure.is_finished:
-                    deepresearch_structure.reset()
+                # if deepresearch_structure.is_finished:
+                #     deepresearch_structure.reset()
                 unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
                     len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
                 # Use dynamic clustering for both allnode and supernode methods
@@ -179,10 +182,10 @@ def calculate_stage_ratio(request_info: RequestInfo, prompt: str, collection_id:
         else:  # deepresearch
             if collection_id not in collection_deepresearch_unfinished_dict:
                 collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
-                    Default_DeepResearch_Stage, Default_DeepResearch_Requests_Pattern, use_all_node, stage_ratio_method)
+                    num_stages, requests_per_stage, use_all_node, stage_ratio_method)
             deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
-            if deepresearch_structure.is_finished:
-                deepresearch_structure.reset()
+            # if deepresearch_structure.is_finished:
+            #     deepresearch_structure.reset()
             unfinished_graph = deepresearch_structure.convert_to_unfinished_graph(
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
             # Use dynamic clustering for both allnode and supernode methods
@@ -250,6 +253,8 @@ async def generate(request: Request) -> Response:
         collection_id = request_info.collection_id
         stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
         logger.info(f"stage_id: {stage_id}")
+        num_stages = request_dict.pop("num_stages", Default_DeepResearch_Stage)
+        requests_per_stage = request_dict.pop("requests_per_stage", Default_DeepResearch_Requests_Pattern)
 
         # Initialize structures based on type
         if graph_structure_type == "tot":
@@ -262,8 +267,6 @@ async def generate(request: Request) -> Response:
                 
         elif graph_structure_type == "deepresearch":
             # Initialize DeepResearch structure if needed
-            num_stages = request_dict.pop("num_stages", Default_DeepResearch_Stage)
-            requests_per_stage = request_dict.pop("requests_per_stage", Default_DeepResearch_Requests_Pattern)
 
             logger.info(f"DeepResearch collective_id: {collection_id}, stages: {num_stages}, requests: {requests_per_stage}")
 
@@ -276,7 +279,7 @@ async def generate(request: Request) -> Response:
 
         # Calculate stage ratio based on matching mode and structure
         if use_graph_matching or graph_matching_mode != "none":
-            stage_ratio = calculate_stage_ratio(request_info, prompt, collection_id, stage_id, accumulate_stage_ratio)
+            stage_ratio = calculate_stage_ratio(num_stages, requests_per_stage, prompt, collection_id, stage_id, accumulate_stage_ratio)
             request_info.deadline *= stage_ratio
 
     assert engine is not None
@@ -457,6 +460,27 @@ async def init_app(
     # Initialize generation tokenizer
     generation_tokenizer = get_tokenizer(args.model)
     logger.info(f"Generation tokenizer initialized for model: {args.model}")
+    
+    # Load deepresearch training data and construct graphs
+    logger.info("Loading deepresearch training data...")
+    deepresearch_training_path = "benchmarks/dataset/trace/deepresearch_training.json"
+    try:
+        deepresearch_graphs = read_deepresearch_traces(deepresearch_training_path, is_all_node=use_all_node)
+        logger.info(f"Loaded {len(deepresearch_graphs)} deepresearch training graphs.")
+        # Store graphs globally for use in request processing
+        global deepresearch_base_graphs, collection_graph_set
+        deepresearch_base_graphs = deepresearch_graphs
+        
+        # Add deepresearch base graphs to collection_graph_set
+        for graph in deepresearch_graphs:
+            collection_graph_set.add(graph)
+        
+    except FileNotFoundError:
+        logger.warning(f"Deepresearch training file not found: {deepresearch_training_path}")
+        deepresearch_base_graphs = []
+    except Exception as e:
+        logger.error(f"Error loading deepresearch training data: {e}")
+        deepresearch_base_graphs = []
         
     engine = (llm_engine
               if llm_engine is not None else AsyncLLMEngine.from_engine_args(

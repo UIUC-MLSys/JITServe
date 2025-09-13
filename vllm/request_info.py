@@ -15,6 +15,10 @@ class RequestTypeWeight(Enum):
 class RequestPhaseWeight(Enum):
     PREFILL = 1
     DECODE = 2
+
+class RequestApplication(Enum):
+    TOT = 1
+    DEEPRESEARCH = 2
     
 class RequestDeltaInfo:
     def __init__(

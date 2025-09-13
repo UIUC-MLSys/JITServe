@@ -5,6 +5,7 @@ import random
 import asyncio
 from itertools import permutations
 from typing import List, Dict, Any, Optional, Tuple
+from enum import Enum
 from vllm.logger import init_logger
 
 logger = init_logger("vllm")
@@ -15,16 +16,22 @@ Defalut_ToT_Requests_Pattern = [3, 1, 9, 1]
 Default_DeepResearch_Stage = 6
 Default_DeepResearch_Requests_Pattern = [1, 1, 1, 1, 1, 1]
 
+class RequestApplication(Enum):
+    TOT = 1
+    DEEPRESEARCH = 2
+
 # Define common graph structure classes
 
 class Graph:
     def __init__(self, 
                 nodes: List[List[tuple[int, Optional[int]]]],  # List of lists: each inner list represents nodes in one stage
                 times: Optional[List[float]]=None,
-                is_all_node: bool=False):
+                is_all_node: bool=False,
+                application: Optional[RequestApplication]=None):
         self.nodes = nodes
         self.times = times
         self.is_all_node = is_all_node  # Flag for all-node approach
+        self.application = application
         
     def get_num_stages(self):
         """Get the number of stages in this graph."""
@@ -154,7 +161,7 @@ class ToTStructure:
             num_stages = len(self.stage_in_out_lengths) if self.stage_in_out_lengths else self.stage_num
             stage_ratios = [1.0 / num_stages] * num_stages
         
-        return Graph(nodes, stage_ratios, self.use_all_node)
+        return Graph(nodes, stage_ratios, self.use_all_node, RequestApplication.TOT)
     
     def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
         """Convert unfinished ToT structure to graph with predicted next stage."""
@@ -188,7 +195,7 @@ class ToTStructure:
             # Add predicted stage
             nodes.append([(input_length, predict_output_length)])
         
-        return Graph(nodes, None, self.use_all_node)
+        return Graph(nodes, None, self.use_all_node, RequestApplication.TOT)
 
 
 class DeepResearchStructure:
@@ -227,13 +234,6 @@ class DeepResearchStructure:
             self.completed_stages = 0
             self.is_finished = False
             self.current_time = time.time()
-    
-    def update_structure(self, num_stages: int, requests_per_stage: List[int]) -> None:
-        """Update the structure parameters for a new collective request."""
-        with self._lock:
-            self.num_stages = num_stages
-            self.requests_per_stage = requests_per_stage
-            self.reset()
     
     def add_length(self, input_length: int, output_length: int) -> bool:
         """
@@ -325,7 +325,7 @@ class DeepResearchStructure:
             num_stages = len(self.stage_in_out_lengths) if self.stage_in_out_lengths else self.num_stages
             stage_ratios = [1.0 / num_stages] * num_stages
         
-        return Graph(nodes, stage_ratios, self.use_all_node)
+        return Graph(nodes, stage_ratios, self.use_all_node, RequestApplication.DEEPRESEARCH)
     
     def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
         """Convert unfinished DeepResearch structure to graph with predicted next stage."""
@@ -359,7 +359,7 @@ class DeepResearchStructure:
             # Add predicted stage
             nodes.append([(input_length, predict_output_length)])
         
-        return Graph(nodes, None, self.use_all_node)
+        return Graph(nodes, None, self.use_all_node, RequestApplication.DEEPRESEARCH)
 
 
 def predict_stage_ratio(query_graph: Graph, graph_set) -> float:
@@ -405,6 +405,11 @@ def compute_similarity(query_graph: Graph, target_graph: Graph, input_w=0.3, out
     Returns:
         A similarity score representing the similarity between the two graphs.
     """
+    
+    # Check if graphs are from different applications - return 0 similarity
+    if (query_graph.application is not None and target_graph.application is not None and 
+        query_graph.application != target_graph.application):
+        return 0.0
     # Early return if target has fewer stages than query
     if target_graph.get_num_stages() < query_graph.get_num_stages():
         return 0.0
@@ -571,13 +576,6 @@ def predict_deepresearch_stage_ratio(query_graph: Graph, graph_set,
         ratio_1 = sum(best_graph.times[:stage_index+1]) / sum(best_graph.times)
         ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_index+1]) / sum(Default_DeepResearch_Requests_Pattern)
         return max(ratio_1, ratio_2)
-
-
-def is_tot_request(request_type: int) -> bool:
-    """Check if a request type corresponds to ToT (Tree of Thoughts)."""
-    # Assuming ToT requests have a specific type identifier
-    # This should be coordinated with the request type definitions
-    return request_type in [0, 1]  # LATENCY or THROUGHPUT
 
 
 def graph_distance(query_graph: Graph, target_graph: Graph, input_w=0.3, output_w=0.7, sigma_input=1.0, sigma_output=1.0):
@@ -864,8 +862,3 @@ class DynamicClustering:
                     best_graph = candidate_graph
             
             return best_graph
-
-
-def is_deepresearch_request(request_type: int) -> bool:
-    """Check if a request type corresponds to DeepResearch collective."""
-    return request_type == 2  # COLLECTIVE

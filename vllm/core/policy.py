@@ -283,6 +283,7 @@ class ConcordPolicy(BasePolicy):
                 # prefill 阶段
                 predict_finish_prefill = serve_time + unit_time
                 predict_finish_decode = serve_time + remain_time
+                predict_finish = predict_finish_prefill
 
                 prefill_ratio = _safe_ratio(seq_group.TTFT_constraint, predict_finish_prefill)
                 decode_ratio = _safe_ratio(seq_group.deadline, predict_finish_decode)
@@ -297,7 +298,10 @@ class ConcordPolicy(BasePolicy):
             total_gain = input_len + predict_output_len * 8
             priority = total_gain * ratio**self.penalty_factor
 
-        density = priority / remain_time
+        if abs(seq_group.deadline - predict_finish) < 1e-6:
+            density = priority / 1e-6
+        else:
+            density = priority / (seq_group.deadline - predict_finish)
         concord_priority = (-density, remain_len)
 
         self.seq_group_slo_dict[seq_group.request_id] = concord_priority

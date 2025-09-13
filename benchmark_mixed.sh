@@ -3,7 +3,7 @@
 # 定义测试参数
 policies=("concord")
 rates=(4.0)
-batch_sizes=(16)
+batch_sizes=(32)
 penalty_factors=(1)
 search_strategy="sliding_window"
 top_k_selection=3
@@ -15,6 +15,7 @@ model="meta-llama/Llama-3.1-8B-Instruct"
 # 输入参数
 request_ratios="1.0,1,1"
 num_prompts="3000"
+use_all_node="false"
 
 # 创建输出目录
 mkdir -p "$output_dir"
@@ -88,6 +89,12 @@ for rate in "${rates[@]}"; do
                     echo "LMSYS请求数: $num_lmsys"
                 fi
 
+                # 构建额外的参数
+                extra_args=""
+                if [ "$use_all_node" = "true" ]; then
+                    extra_args="$extra_args --use-all-node"
+                fi
+
                 # 启动服务器
                 echo "启动服务器..."
                 if [ "$policy" = "vllm" ]; then
@@ -98,6 +105,7 @@ for rate in "${rates[@]}"; do
                         --max-num-seqs "$batch_size" \
                         --search-strategy "$search_strategy" \
                         --top-k-selection "$top_k_selection" \
+                        $extra_args \
                         --model "$model" &
                 elif [ "$policy" = "vtc" ]; then
                     python3 -m vllm.entrypoints.api_server \
@@ -107,6 +115,7 @@ for rate in "${rates[@]}"; do
                         --max-num-seqs "$batch_size" \
                         --search-strategy "$search_strategy" \
                         --top-k-selection "$top_k_selection" \
+                        $extra_args \
                         --model "$model" &
                 elif [ "$policy" = "concord-precise" ]; then
                     python3 -m vllm.entrypoints.api_server \
@@ -117,6 +126,7 @@ for rate in "${rates[@]}"; do
                         --max-num-seqs "$batch_size" \
                         --search-strategy "$search_strategy" \
                         --top-k-selection "$top_k_selection" \
+                        $extra_args \
                         --model "$model" &
                 else
                     python3 -m vllm.entrypoints.api_server \
@@ -126,6 +136,7 @@ for rate in "${rates[@]}"; do
                         --max-num-seqs "$batch_size" \
                         --search-strategy "$search_strategy" \
                         --top-k-selection "$top_k_selection" \
+                        $extra_args \
                         --model "$model" &
                 fi
                 server_pid=$!
