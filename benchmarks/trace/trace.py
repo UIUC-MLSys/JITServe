@@ -12,19 +12,12 @@ from typing import Dict, List, Tuple
 
 # Import RequestInfo
 sys.path.append('../../')
-from vllm.request_info import RequestInfo
+from vllm.request_info import RequestInfo, RequestType
 
 support_datasets = ['alpaca', 'lmsys_chat', 'ToT', 'mix']
 throughput_hint_words = ['code', 'function', 'method', 'class', 'variable', 'python', 'test']
 collective_prompt = "Given the following question, try to reason it step by step and give several possible answers. The question is:"
-default_burst_gpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BurstGPT_1.csv")
-
-class RequestType(IntEnum):
-    Latency = 0
-    Throughput = 1
-    Collective = 2
-    
-    
+default_burst_gpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BurstGPT_1.csv")    
 
 class BaseDataset:
     '''
@@ -110,30 +103,30 @@ class BaseDataset:
             num_collective = num_requests - num_throughput - num_latency
 
             request_type_list = (
-                [RequestType.Throughput] * num_throughput +
-                [RequestType.Latency] * num_latency +
-                [RequestType.Collective] * num_collective
+                [RequestType.THROUGHPUT] * num_throughput +
+                [RequestType.LATENCY] * num_latency +
+                [RequestType.COLLECTIVE] * num_collective
             )
             random.shuffle(request_type_list)
         else:
             for prompt in self.prompts:
                 if any(word in prompt for word in throughput_hint_words):
-                    prompt_type = RequestType.Throughput
+                    prompt_type = RequestType.THROUGHPUT
                 elif random.random() < 0.25:
-                    prompt_type = RequestType.Collective
+                    prompt_type = RequestType.COLLECTIVE
                 else:
-                    prompt_type = RequestType.Latency
+                    prompt_type = RequestType.LATENCY
                 request_type_list.append(prompt_type)
 
-                if prompt_type == RequestType.Throughput:
+                if prompt_type == RequestType.THROUGHPUT:
                     num_throughput += 1
-                elif prompt_type == RequestType.Latency:
+                elif prompt_type == RequestType.LATENCY:
                     num_latency += 1
                 else:
                     num_collective += 1
                     
         for i, prompt in enumerate(self.prompts):
-            if request_type_list[i] == RequestType.Collective:
+            if request_type_list[i] == RequestType.COLLECTIVE:
                 self.prompts[i] = collective_prompt + prompt
         
         # Print the number of requests in each category

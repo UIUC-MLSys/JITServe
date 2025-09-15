@@ -11,8 +11,7 @@ from copy import deepcopy
 from tqdm import tqdm
 from typing import List, Tuple, AsyncGenerator, Optional
 from vllm import SamplingParams
-from .trace import RequestType
-from vllm.request_info import RequestInfo
+from vllm.request_info import RequestInfo, RequestType
 
 class RequestInput:
     def __init__(
@@ -468,12 +467,11 @@ async def client_simulator(
         return []
     async for request in get_request(input_requests, poisson_lambda, burst):      
         request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url)
-        deadline = client_deadline
 
-        if request.request_type == RequestType.Collective:
-            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, deadline, pbar, is_stream)))
+        if request.request_type == RequestType.COLLECTIVE:
+            tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, client_deadline, pbar, is_stream)))
         else:
-            tasks.append(asyncio.create_task(send_request(request_info, model_name, deadline, pbar, is_stream)))
+            tasks.append(asyncio.create_task(send_request(request_info, model_name, client_deadline, pbar, is_stream)))
         
     outputs: List[List[RequestOutput]] = await asyncio.gather(*tasks)
     finish_time = []

@@ -34,8 +34,8 @@ except ImportError:
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, TaskOutput,
-                              RequestOutput, Trace, BaseDataset, RequestType)
-from vllm.request_info import RequestInfo
+                              RequestOutput, Trace, BaseDataset)
+from vllm.request_info import RequestInfo, RequestType
 
 @dataclass
 class BenchmarkMetrics:
@@ -48,7 +48,9 @@ class BenchmarkMetrics:
     request_total_output: int
     request_throughput: List[float]
     request_goodput: List[float]
-    time_window_service_gain: Dict[int, List[float]]
+    # time_window_service_gain: Dict[int, List[float]]
+    time_window_request_goodput: Dict[int, List[float]]
+    time_window_token_goodput: Dict[int, List[float]]
     input_token_throughput: float
     output_token_throughput: float
     total_token_throughput: float
@@ -85,7 +87,9 @@ def calculate_metrics(
     slo_ttft_meet = [0, 0, 0, 0]
     slo_tbt_meet = [0, 0, 0, 0]         
     slo_ttlt_meet = [0, 0, 0, 0]
-    time_window_service_gain = {}
+    # time_window_service_gain = {}
+    time_window_request_goodput = {}
+    time_window_token_goodput = {}
 
     request_metrics = []
     
@@ -103,7 +107,7 @@ def calculate_metrics(
                 tbt_list = outputs[i][req_idx].request_tbt
                 ttlt = outputs[i][req_idx].request_latency
 
-                req_slo_constraint = tuple(slo * (outputs[i][req_idx].collection_id % 4 + 1) for slo in slo_constraint) if slo_constraint else None
+                req_slo_constraint = tuple(slo * (outputs[i][req_idx].collection_id % 2 + 1) for slo in slo_constraint) if slo_constraint else None
                 
                 meets_ttft = (ttft <= req_slo_constraint[0]) if req_slo_constraint else True
                 meets_tbt = all(tbt <= req_slo_constraint[1] for tbt in tbt_list) if req_slo_constraint else True
@@ -131,10 +135,10 @@ def calculate_metrics(
                 
                 # 计算所属时间窗口
                 window_end: int = (finish_time // time_window_seconds) * time_window_seconds
-                if window_end not in time_window_service_gain:
-                    time_window_service_gain[window_end] = [0.0, 0.0, 0.0, 0.0]
-                time_window_service_gain[window_end][task_type] += service_gain
-                time_window_service_gain[window_end][3] += service_gain
+                # if window_end not in time_window_service_gain:
+                #     time_window_service_gain[window_end] = [0.0, 0.0, 0.0, 0.0]
+                # time_window_service_gain[window_end][task_type] += service_gain
+                # time_window_service_gain[window_end][3] += service_gain
                 request_service_gain[task_type] += service_gain
                 request_service_gain[3] += service_gain
 
@@ -149,8 +153,40 @@ def calculate_metrics(
                 e2el_data[3].append(ttlt)  # Total
 
                 avg_tbt = np.mean(tbt_list) if tbt_list else 0.0
-                meet_tbt_count = sum(tbt <= slo_constraint[1] for tbt in tbt_list)
+                # for latency sensitive requests, ttft will infuence meet_tbt_count
+                token_arrive_times = np.cumsum(tbt_list) + ttft
+                token_slo_times = np.array([req_slo_constraint[1] * (j + 1) + req_slo_constraint[0] for j in range(len(tbt_list))])
+                # compare
+                meet_tbt_count = np.sum(token_arrive_times <= token_slo_times)
                 total_tbt_count = len(tbt_list)
+
+                if window_end not in time_window_request_goodput:
+                    time_window_request_goodput[window_end] = [0.0, 0.0, 0.0, 0.0]
+                    time_window_token_goodput[window_end] = [0.0, 0.0, 0.0, 0.0]
+
+                # request goodput：是否满足 SLO 就算 1 个
+                if req_slo_constraint:
+                    if (meets_ttft and meets_tbt and task_type == 0) or \
+                       (meets_ttlt and task_type == 1) or \
+                       (outputs[i][req_idx].finish_before_ddl and task_type == 2):
+                        time_window_request_goodput[window_end][task_type] += 1 / time_window_seconds
+                        time_window_request_goodput[window_end][3] += 1 / time_window_seconds
+
+                # token goodput：满足 SLO 的 token 数量
+                if task_type == 0:  # latency-sensitive
+                    prefill_tokens = request_input_token_length if meets_ttft else 0
+                    decode_tokens = meet_tbt_count
+                else:  # throughput / collective
+                    if meets_ttlt:
+                        prefill_tokens = request_input_token_length
+                        decode_tokens = request_output_token_length
+                    else:
+                        prefill_tokens = 0
+                        decode_tokens = 0
+
+                token_goodput = prefill_tokens + 8 * decode_tokens
+                time_window_token_goodput[window_end][task_type] += token_goodput / time_window_seconds
+                time_window_token_goodput[window_end][3] += token_goodput / time_window_seconds
 
                 request_metrics.append({
                     "collection_id": outputs[i][req_idx].collection_id,
@@ -199,7 +235,9 @@ def calculate_metrics(
         request_service_gain=request_service_gain,
         request_total_input=request_total_input,
         request_total_output=request_total_output,
-        time_window_service_gain=time_window_service_gain,
+        # time_window_service_gain=time_window_service_gain,
+        time_window_request_goodput=time_window_request_goodput,
+        time_window_token_goodput=time_window_token_goodput,
         request_throughput=[completed / dur_s for completed in request_completed],
         request_goodput=[completed / dur_s for completed in request_slo_meet],
         input_token_throughput=request_total_input / dur_s,
@@ -437,38 +475,26 @@ def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics
     print_latency_stats(metrics, "e2el")
     print(separator)
 
-    def print_time_window_gain(metrics: BenchmarkMetrics):
-        print("\n{:=^80}".format(" Time Window Service Gain "))
+    def print_time_window_goodput(metrics: BenchmarkMetrics):
+        print("\n{:=^80}".format(" Time Window Request Goodput "))
         print("{:<10} {:<15} {:<15} {:<15} {:<15}".format(
             "Window(s)", "Latency", "Throughput", "Collective", "Total"))
         print("-" * 80)
-
-        sorted_windows = sorted(metrics.time_window_service_gain.items(), key=lambda x: x[0])
-
-        for window_end, gains in sorted_windows:
+        for window_end, vals in sorted(metrics.time_window_request_goodput.items()):
             print("{:<10} {:<15.2f} {:<15.2f} {:<15.2f} {:<15.2f}".format(
-                window_end,
-                gains[0],  # Latency
-                gains[1],  # Throughput
-                gains[2],  # Collective
-                gains[3],  # Total
+                window_end, vals[0], vals[1], vals[2], vals[3]
             ))
-        
-        # print total service gain of all time windows
-        total_gains = [0.0, 0.0, 0.0, 0.0]
-        for _, gains in sorted_windows:
-            for i in range(4):
-                total_gains[i] += gains[i]
+
+        print("\n{:=^80}".format(" Time Window Token Goodput "))
+        print("{:<10} {:<15} {:<15} {:<15} {:<15}".format(
+            "Window(s)", "Latency", "Throughput", "Collective", "Total"))
         print("-" * 80)
-        print("{:<10} {:<15.2f} {:<15.2f} {:<15.2f} {:<15.2f}".format(
-            "Total",
-            total_gains[0],  # Latency
-            total_gains[1],  # Throughput
-            total_gains[2],  # Collective
-            total_gains[3],  # Total
-        ))
+        for window_end, vals in sorted(metrics.time_window_token_goodput.items()):
+            print("{:<10} {:<15.0f} {:<15.0f} {:<15.0f} {:<15.0f}".format(
+                window_end, vals[0], vals[1], vals[2], vals[3]
+            ))
         print("=" * 80)
-    print_time_window_gain(metrics)
+    print_time_window_goodput(metrics)
     print(header_separator)
 
     print("\nPer-Request Metrics:")
@@ -530,11 +556,11 @@ async def benchmark(
 ):
     trace_len = len(trace)
     total_output_len = sum(
-        (item.output_len * 14 if item.request_type == RequestType.Collective else item.output_len)
+        (item.output_len * 14 if item.request_type == RequestType.COLLECTIVE else item.output_len)
         for item in trace
     )
     total_request_number = sum(
-        (14 if item.request_type == RequestType.Collective else 1)
+        (14 if item.request_type == RequestType.COLLECTIVE else 1)
         for item in trace
     )
     average_output_len = total_output_len // total_request_number
@@ -639,7 +665,7 @@ async def benchmark(
         api_url=api_url,
     )
     
-    if test_input.request.request_type == RequestType.Collective:
+    if test_input.request.request_type == RequestType.COLLECTIVE:
         test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
                                                                          model_name=model, 
                                                                          tot_structure=tot_structure,
@@ -658,11 +684,11 @@ async def benchmark(
     print(f"Maximum request concurrency: {max_concurrency}")
     
     for request in requests:
-        if request.request_type == RequestType.Latency:
+        if request.request_type == RequestType.LATENCY:
             request.deadline = slo_constraint[0] + slo_constraint[1] * request.output_len
-        elif request.request_type == RequestType.Throughput:
+        elif request.request_type == RequestType.THROUGHPUT:
             request.deadline = slo_constraint[2]
-        elif request.request_type == RequestType.Collective:
+        elif request.request_type == RequestType.COLLECTIVE:
             request.deadline = slo_constraint[2] * tot_structure[1] * 2
         request.deadline *= 1000
 

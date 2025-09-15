@@ -70,6 +70,9 @@ class DeepResearchMetrics:
     slo_met_ratio: float
     slo_met_requests: int  # Number of individual requests that met SLO
     slo_goodput: float  # SLO goodput: requests meeting SLO per second
+    slo_token_goodput: float  # SLO token goodput: tokens from requests meeting SLO per second
+    time_window_request_goodput: Dict[int, float]
+    time_window_token_goodput: Dict[int, float]
     total_service_gain: float
 
 
@@ -79,6 +82,7 @@ def calculate_deepresearch_metrics(
     tokenizer: PreTrainedTokenizerBase,
     selected_percentiles: List[float],
     slo_constraint: Optional[Tuple[float, float, float]] = None,
+    time_window_seconds: int = 60,
 ) -> DeepResearchMetrics:
     """Calculate metrics for DeepResearch collective requests."""
     
@@ -104,16 +108,36 @@ def calculate_deepresearch_metrics(
     ttft_values = []
     slo_met_collections = 0
     slo_met_requests = 0  # Track individual requests meeting SLO
+    slo_met_tokens = 0  # Track tokens from requests meeting SLO
     slo_met_collections_requests = 0  # Track collections meeting SLO
+    time_window_request_goodput = {}
+    time_window_token_goodput = {}
     
     for collective_output in collective_outputs:
+        req_slo_constraint = tuple(slo * (collective_output.collection_id % 2 + 1) for slo in slo_constraint) if slo_constraint else None
+
         if collective_output.success:
             collection_latencies.append(collective_output.total_latency)
             
             # Check SLO for collection - not used for goodput calculation
-            if slo_constraint and collective_output.total_latency <= slo_constraint[2] * len(collective_output.stage_outputs):
+            if req_slo_constraint and collective_output.total_latency <= req_slo_constraint[2] * len(collective_output.stage_outputs):
                 slo_met_collections += 1
                 slo_met_collections_requests += sum(len(so.stage_outputs) for so in collective_output.stage_outputs)
+                
+                for stage_output in collective_output.stage_outputs:
+                    for request_output in stage_output.stage_outputs:
+                        input_tokens = len(tokenizer(request_output.request_input, add_special_tokens=False).input_ids)
+                        output_tokens = len(tokenizer(request_output.request_output, add_special_tokens=False).input_ids)
+                        slo_met_tokens += input_tokens + output_tokens * 8
+
+
+                        finish_time = request_output.request_finish_time
+                        window_end: int = (finish_time // time_window_seconds) * time_window_seconds
+                        time_window_request_goodput.setdefault(window_end, 0)
+                        time_window_request_goodput[window_end] += 1 / time_window_seconds
+                        time_window_token_goodput.setdefault(window_end, 0)
+                        time_window_token_goodput[window_end] += (input_tokens + output_tokens * 8) / time_window_seconds
+        
 
         for stage_output in collective_output.stage_outputs:
             total_stages += 1
@@ -130,7 +154,7 @@ def calculate_deepresearch_metrics(
                     request_latencies.append(request_output.request_latency)
                     
                     # Check if individual request meets SLO
-                    if slo_constraint and request_output.request_latency <= slo_constraint[2]:
+                    if req_slo_constraint and request_output.request_latency <= req_slo_constraint[2]:
                         slo_met_requests += 1
                     
                     # Calculate tokens
@@ -145,7 +169,7 @@ def calculate_deepresearch_metrics(
                     total_service_gain += request_output.request_service_gain
                 else:
                     failed_requests += 1
-    
+
     # Calculate statistics
     def compute_percentiles(data: List[float], percentiles: List[float]) -> List[Tuple[float, float]]:
         if not data:
@@ -184,6 +208,9 @@ def calculate_deepresearch_metrics(
         slo_met_ratio=slo_met_collections / completed_collections if completed_collections > 0 else 0,
         slo_met_requests=slo_met_requests,
         slo_goodput=slo_met_collections_requests / dur_s if dur_s > 0 else 0,
+        slo_token_goodput=slo_met_tokens / dur_s if dur_s > 0 else 0,
+        time_window_request_goodput=time_window_request_goodput,
+        time_window_token_goodput=time_window_token_goodput,
         total_service_gain=total_service_gain,
     )
     
@@ -273,7 +300,28 @@ def print_deepresearch_results(metrics: DeepResearchMetrics) -> None:
     print("{:<40} {:<20.2%}".format("Collection SLO Met Ratio", metrics.slo_met_ratio))
     print("{:<40} {:<20}".format("Requests Meeting SLO", metrics.slo_met_requests))
     print("{:<40} {:<20.2f} req/s".format("SLO Goodput", metrics.slo_goodput))
+    print("{:<40} {:<20.2f} tokens/s".format("SLO Token Goodput", metrics.slo_token_goodput))
     print("{:<40} {:<20.2f}".format("Total Service Gain", metrics.total_service_gain))
+    print(separator)
+    
+    print("\n{:=^80}".format(" Time Window Request Goodput "))
+    print("{:<10} {:<15}".format(
+        "Window(s)", "DeepResearch"))
+    print("-" * 80)
+    for window_end, val in sorted(metrics.time_window_request_goodput.items()):
+        print("{:<10} {:<15.2f}".format(
+            window_end, val
+        ))
+
+    print("\n{:=^80}".format(" Time Window Token Goodput "))
+    print("{:<10} {:<15}".format(
+        "Window(s)", "DeepResearch"))
+    print("-" * 80)
+    for window_end, val in sorted(metrics.time_window_token_goodput.items()):
+        print("{:<10} {:<15.0f}".format(
+            window_end, val
+        ))
+    print("=" * 80)
     
     print(header_separator)
 
