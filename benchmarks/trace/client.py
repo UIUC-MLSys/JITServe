@@ -331,7 +331,7 @@ async def send_collective_request(
                 # sort the choices based on the value
                 value = [random.random() for _ in range(len(choices))]
                 choices = [x for _, x in sorted(zip(value, choices), reverse=True)]
-                thoughts = choices[:num_thoughts]
+                thoughts = [choices[0]]
             
             ed = time.perf_counter()
             task_latency = ed - st

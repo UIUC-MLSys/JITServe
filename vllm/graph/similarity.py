@@ -11,7 +11,7 @@ from vllm.logger import init_logger
 logger = init_logger("vllm")
 
 Defalut_ToT_Stage = 4
-Defalut_ToT_Requests_Pattern = [3, 1, 9, 1]
+Defalut_ToT_Requests_Pattern = [3, 1, 3, 1]
 
 Default_DeepResearch_Stage = 6
 Default_DeepResearch_Requests_Pattern = [1, 1, 1, 1, 1, 1]

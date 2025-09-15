@@ -1276,6 +1276,7 @@ class Scheduler:
 
             scored = [( _service_gain(sg), sg) for sg in preemption_list]
             scored.sort(key=lambda x: x[0])
+            k = self.top_k_selection
             top_mk = [sg for _, sg in scored[:self.scheduler_config.max_num_seqs * k]]
 
             # for sg in top_mk:
@@ -1284,7 +1285,6 @@ class Scheduler:
             top_mk.sort(key=_seq_len)
             total_reqs_num = len(top_mk)
             mode = None
-            k = self.scheduler_config.top_k_selection
             if mode == "length":
                 max_length = max(max(_seq_len(sg) for sg in top_mk), 1024)
                 bins = [[] for _ in range(k)]

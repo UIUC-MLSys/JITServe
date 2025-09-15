@@ -556,7 +556,7 @@ async def benchmark(
 ):
     trace_len = len(trace)
     total_output_len = sum(
-        (item.output_len * 14 if item.request_type == RequestType.COLLECTIVE else item.output_len)
+        (min(item.output_len, 256) * 14 if item.request_type == RequestType.COLLECTIVE else min(item.output_len, 1024))
         for item in trace
     )
     total_request_number = sum(
@@ -568,7 +568,7 @@ async def benchmark(
     if trace_pattern == "homo":
         print("Using homo trace pattern for requests.")
         update_trace = [copy.deepcopy(item) for item in (trace * (num_prompts // trace_len + 1))[:num_prompts]]
-        total_input_len = sum(update_trace[i].prompt_len for i in range(len(update_trace)))
+        total_input_len = sum(update_trace[i].input_len for i in range(len(update_trace)))
         requests = []
         input_len = total_input_len // len(update_trace)
         vocab_size = tokenizer.vocab_size
@@ -595,7 +595,7 @@ async def benchmark(
             ]
             prompt = tokenizer.decode(re_encoded_sequence)
             real_trace.prompt = prompt
-            real_trace.prompt_len = len(re_encoded_sequence)
+            real_trace.input_len = len(re_encoded_sequence)
             
             requests.append(real_trace)
     elif trace_pattern == "hetero":
