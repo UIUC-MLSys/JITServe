@@ -762,8 +762,8 @@ class SequenceGroup:
         self.slo_priority = 0
         self.collection_id = request_info.collection_id
         self.deadline = (
-            request_info.deadline / 1000
-            if request_info.request_type == RequestType.LATENCY
+            request_info.deadline
+            if request_info.request_type != RequestType.LATENCY
             else request_info.slo_constraint[0] + request_info.slo_constraint[1] * request_info.real_output_len
         )
         self.TTFT_constraint = request_info.slo_constraint[0]

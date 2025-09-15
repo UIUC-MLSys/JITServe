@@ -20,14 +20,15 @@ class RequestInput:
         slo_constraint: Tuple[float, float, float],
         sampling_params: SamplingParams,
         client_id: int,
-        api_url: str
+        api_url: str,
+        num_stages: int = 1,
         ):
         self.request = request
         self.slo_constraint = slo_constraint
         self.sampling_params = sampling_params
         self.client_id = client_id
         self.api_url = api_url
-    
+        self.num_stages = num_stages
 
 class RequestOutput:
     def __init__(self):
@@ -466,7 +467,7 @@ async def client_simulator(
     if len(input_requests) == 0:
         return []
     async for request in get_request(input_requests, poisson_lambda, burst):      
-        request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url)
+        request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url, tot_structure[1]*2)
 
         if request.request_type == RequestType.COLLECTIVE:
             tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, client_deadline, pbar, is_stream)))

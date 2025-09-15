@@ -114,7 +114,7 @@ def calculate_deepresearch_metrics(
     time_window_token_goodput = {}
     
     for collective_output in collective_outputs:
-        req_slo_constraint = tuple(slo * (collective_output.collection_id % 2 + 1) for slo in slo_constraint) if slo_constraint else None
+        req_slo_constraint = tuple(slo * (collective_output.collection_id % 4 + 1) for slo in slo_constraint) if slo_constraint else None
 
         if collective_output.success:
             collection_latencies.append(collective_output.total_latency)

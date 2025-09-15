@@ -240,6 +240,11 @@ async def generate(request: Request) -> Response:
     req_idx = request_info.get("collection_id", 0) % 4 + 1
     request_info["slo_constraint"] = tuple(slo * req_idx for slo in slo_constraint)
     request_info = RequestInfo.from_json(request_info)
+    if request_info.request_type == RequestType.THROUGHPUT:
+        request_info.deadline = request_info.slo_constraint[2]
+    elif request_info.request_type == RequestType.COLLECTIVE:
+        num_stages = request_dict.get("num_stages", Default_DeepResearch_Stage)
+        request_info.deadline = request_info.slo_constraint[2] * num_stages
     request_id = random_uuid()
     
     if use_prediction:
