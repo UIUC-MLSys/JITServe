@@ -422,20 +422,8 @@ def compute_similarity(query_graph: Graph, target_graph: Graph, input_w=0.3, out
         target_stage_nodes = target_graph.nodes[stage_idx].copy()
         
         # Expand to match lengths
-        if len(query_stage_nodes) > len(target_stage_nodes):
-            # Expand target with (0, 0) nodes
-            while len(target_stage_nodes) < len(query_stage_nodes):
-                target_stage_nodes.append((0, 0))
-        elif len(query_stage_nodes) < len(target_stage_nodes):
-            # Expand query with appropriate nodes
-            if query_stage_nodes and query_stage_nodes[0][1] is not None:
-                # Expand with (0, 0) if output is not None
-                expand_node = (0, 0)
-            else:
-                # Expand with (0, None) if output is None
-                expand_node = (0, None)
-            while len(query_stage_nodes) < len(target_stage_nodes):
-                query_stage_nodes.append(expand_node)
+        if len(query_stage_nodes) != len(target_stage_nodes):
+            return 0.0  # Require exact match in number of nodes per stage
         
         # Now both lists have same length, find best pairwise matching
         stage_similarity = find_best_matching_similarity(
