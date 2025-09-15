@@ -3,6 +3,7 @@
 import json
 import argparse
 import os
+import random
 
 def parse_request_ratio(ratio_str):
     """Parse request ratio string in format 'num_1,num_2,num_3'"""
@@ -108,7 +109,10 @@ def main():
     
     # Create modified trace
     modified_trace = create_modified_trace(original_trace, latency_count, throughput_count, collective_count)
-    
+
+    # Shuffle the trace to avoid all requests of the same type being stuck together
+    random.shuffle(modified_trace)
+
     # Generate output filename
     ratio_str = '_'.join(str(r) for r in args.request_ratio)
     output_filename = f"lmsys_num_prompts_{args.num_prompts}_request_ratio_{ratio_str}.json"
