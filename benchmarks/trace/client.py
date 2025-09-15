@@ -156,6 +156,7 @@ async def send_collective_request(
             "sampling_params": request_info.sampling_params.to_dict(),
             "client_id": request_info.client_id,
             "stream": is_stream,
+            "num_stages": 4,
             "target_output_length": request_info.request.output_len,  # Send output length to server
         }
         st = time.perf_counter()
@@ -334,8 +335,9 @@ async def send_collective_request(
             
             ed = time.perf_counter()
             task_latency = ed - st
-            if task_latency > request_info.request.deadline / 1000:
-                slo_violation_penalty = (request_info.request.deadline / 1000) / task_latency
+            total_deadline = request_info.request.deadline / 1000 * 4
+            if task_latency > total_deadline:
+                slo_violation_penalty = (total_deadline) / task_latency
                 slo_violation_penalty = max(1e-6, min(1.0, slo_violation_penalty))**penalty_factor
                 for output in output_list:
                     output.finish_before_ddl = False

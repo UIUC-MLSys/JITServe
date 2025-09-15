@@ -107,7 +107,7 @@ def calculate_metrics(
                 tbt_list = outputs[i][req_idx].request_tbt
                 ttlt = outputs[i][req_idx].request_latency
 
-                req_slo_constraint = tuple(slo * (outputs[i][req_idx].collection_id % 2 + 1) for slo in slo_constraint) if slo_constraint else None
+                req_slo_constraint = tuple(slo * (outputs[i][req_idx].collection_id % 4 + 1) for slo in slo_constraint) if slo_constraint else None
                 
                 meets_ttft = (ttft <= req_slo_constraint[0]) if req_slo_constraint else True
                 meets_tbt = all(tbt <= req_slo_constraint[1] for tbt in tbt_list) if req_slo_constraint else True
@@ -689,7 +689,7 @@ async def benchmark(
         elif request.request_type == RequestType.THROUGHPUT:
             request.deadline = slo_constraint[2]
         elif request.request_type == RequestType.COLLECTIVE:
-            request.deadline = slo_constraint[2] * tot_structure[1] * 2
+            request.deadline = slo_constraint[2]
         request.deadline *= 1000
 
     pbar = None if disable_tqdm else tqdm(total=len(requests))
