@@ -556,11 +556,11 @@ async def benchmark(
 ):
     trace_len = len(trace)
     total_output_len = sum(
-        (min(item.output_len, 256) * 14 if item.request_type == RequestType.COLLECTIVE else min(item.output_len, 1024))
+        (min(item.output_len, 256) * 8 if item.request_type == RequestType.COLLECTIVE else min(item.output_len, 1024))
         for item in trace
     )
     total_request_number = sum(
-        (14 if item.request_type == RequestType.COLLECTIVE else 1)
+        (8 if item.request_type == RequestType.COLLECTIVE else 1)
         for item in trace
     )
     average_output_len = total_output_len // total_request_number
