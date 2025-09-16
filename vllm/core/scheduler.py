@@ -15,6 +15,7 @@ from vllm.core.vtc_scheduler import VTCReqQueue
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.prompt_adapter.request import PromptAdapterRequest
+from vllm.request_info import RequestType
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta,
                            SequenceStatus)
@@ -1262,6 +1263,28 @@ class Scheduler:
             start, end_open = bounds
             return (start <= L < end_open) or (is_last_bin and L >= start)
 
+        def _compute_collection_demand(seqs: List[SequenceGroup], schedule_interval):
+            """计算某个 collection 的最低服务带宽需求"""
+            if not seqs:
+                return 0
+
+            cur_time = time.time()
+            decode_len = [seq.first_seq.get_decode_len() for seq in seqs]
+            predict_output_len = [seq.request_info.output_len for seq in seqs]
+
+            remaining_tokens = [predict_output_len[i] - decode_len[i] for i in range(len(seqs))]
+            deadlines = [seq.deadline + seq.arrival_time - cur_time for seq in seqs]
+
+            total_remaining = sum(remaining_tokens)
+            min_ttd = min(deadlines)
+
+            if min_ttd <= 0:  # 已过期，需求无效
+                return 0
+
+            # 每个时间步需要跑的 token 数量
+            required_bandwidth = total_remaining / min_ttd
+            return required_bandwidth * schedule_interval
+
         def _recompute_bins():
             preemption_list = list(self.waiting) + list(self.swapped) + list(self.running)
             # self.scheduler_config.max_num_seqs += 1
@@ -1429,6 +1452,31 @@ class Scheduler:
             else:
                 best_window = top_mk
 
+            collections = {}
+            schedule_time = self.policy.schedule_interval * self.policy.interval_time \
+                            if self.policy.interval_time else self.policy.schedule_interval * 0.02
+            for seq in best_window:
+                if seq.request_type == RequestType.COLLECTIVE:
+                    collections.get(seq.collection_id, []).append(seq)
+
+            for cid, seqs in collections.items():
+                # 该 collection 的总需求
+                demand = _compute_collection_demand(self.policy.seq_group_dict[cid], schedule_time)
+
+                # window 内该 collection 能提供的 token 数
+                provided = len(seqs) * self.policy.schedule_interval
+
+                if provided < demand:
+                    candidates = self.policy.seq_group_dict[cid]
+                    candidates.sort(key=_service_gain, reverse=True)
+
+                    for r in candidates:
+                        if r not in best_window:
+                            best_window.append(r)
+                            provided += self.policy.schedule_interval
+                            if provided >= demand or len(best_window) >= batch_size:
+                                break
+
             # logger.info(f"[sliding window] best_idx={best_idx} best_sum={best_sum} cur_bin={len(best_window)} preemption_list={len(preemption_list)} top_mk={len(top_mk)}")
 
             self._current_bin_queue = deque(best_window)
@@ -1453,7 +1501,7 @@ class Scheduler:
 
         if self.search_strategy == "sliding_window":
             _recompute_bins_sliding_window()
-        elif not self._pending_swap_out_queue:                                           # 原模式
+        elif not self._pending_swap_out_queue:
             _recompute_bins()
 
         # 无可调度对象，直接收尾
@@ -1547,7 +1595,7 @@ class Scheduler:
             self.scheduler_config.max_num_seqs = max(self.max_batch_size, len(process_list))
             budget.max_num_seqs = self.scheduler_config.max_num_seqs
             logger.info(f"Set max_num_seqs to {self.scheduler_config.max_num_seqs} for sliding window")
-            if self.policy.interval_time is not None and self.policy.interval_time > min_tbt_required / 2:
+            if self.policy.interval_time is not None and self.policy.interval_time > min_tbt_required:
                 self.scheduler_config.max_num_seqs -= self.max_swaps_per_iter
                 logger.info(f"Adjust max_num_seqs to {self.scheduler_config.max_num_seqs} due to TBT {min_tbt_required} and policy interval {self.policy.interval_time}")
        

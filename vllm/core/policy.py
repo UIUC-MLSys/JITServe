@@ -234,37 +234,27 @@ class ConcordPolicy(BasePolicy):
         logger.info("SLO policy is used")
         
     def allocation_control(self, seq_group: SequenceGroup) -> float:
-        max_remain_time = 0
+        total_remain_time = 0
         unit_time = self.interval_time if self.interval_time else 0.02
         #unit_time = seq_group.TBT_constraint
         for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
             peer_predict_output_len = peer_seq_group.predict_output_length
             peer_decode_len = peer_seq_group.seqs[0].get_decode_len()
             peer_remain_time = unit_time * (peer_predict_output_len - peer_decode_len)
-            max_remain_time = max(max_remain_time, peer_remain_time)
+            total_remain_time += peer_remain_time
             
-        return max_remain_time
+        return total_remain_time
     
-    def get_priority(self, seq_group: SequenceGroup) -> float:
-        """
-        Calculate scheduling priority using Concord policy.
-        Now uses dynamic `interval_time` instead of fixed TBT constraint.
-        """
-
-        # 如果之前算过就直接返回
-        if self.seq_group_slo_dict.get(seq_group.request_id) is not None:
-            return self.seq_group_slo_dict[seq_group.request_id]
-
+    def reward_estimation(self, seq_group: SequenceGroup) -> Tuple[float, float]:
         cur_time = time.time()
         input_len = seq_group.seqs[0].get_prompt_len()
         decode_len = seq_group.seqs[0].get_decode_len()
         predict_output_len = seq_group.request_info.output_len
         remain_len = predict_output_len - decode_len
-        #TODO: should we consider the case when remain_len <= 0?
 
-        # 用 interval_time 替代 TBT_constraint
+        # time to deadline = deadline - (cur_time - arrival_time) = deadline - serve_time
+        # finish_time = serve_time + remain_time
         unit_time = self.interval_time if self.interval_time else 0.02
-        # unit_time = seq_group.TBT_constraint
         remain_time = unit_time * remain_len
         serve_time = cur_time - seq_group.arrival_time
         if seq_group.request_type == RequestType.COLLECTIVE:
@@ -276,15 +266,14 @@ class ConcordPolicy(BasePolicy):
             """Clamp ratio between 1e-6 and 1.0 to avoid blowups."""
             return max(1e-6, min(1.0, numer / denom))
 
-        priority = 0.0
+        reward = 0.0
         if seq_group.request_type == RequestType.LATENCY:
             # 如果已经有 TTFT 和 service_gain，说明进入 decode 阶段
             if seq_group.concord_metrics.TTFT is not None and seq_group.concord_metrics.service_gain > 0:
                 predict_finish = serve_time + remain_time
                 ratio = _safe_ratio(seq_group.deadline, predict_finish)
                 decode_gain = remain_len * 8
-                priority = seq_group.concord_metrics.service_gain + decode_gain * ratio**self.penalty_factor
-
+                reward = seq_group.concord_metrics.service_gain + decode_gain * ratio**self.penalty_factor
             else:
                 # prefill 阶段
                 predict_finish_prefill = serve_time + unit_time
@@ -296,20 +285,52 @@ class ConcordPolicy(BasePolicy):
 
                 prefill_gain = input_len * prefill_ratio**self.penalty_factor
                 decode_gain = predict_output_len * decode_ratio**self.penalty_factor * 8
-                priority = prefill_gain + decode_gain
+                reward = prefill_gain + decode_gain
 
         elif seq_group.request_type in (RequestType.THROUGHPUT, RequestType.COLLECTIVE):
-            predict_finish = serve_time + unit_time * remain_len
+            predict_finish = serve_time + remain_time
             ratio = _safe_ratio(seq_group.deadline, predict_finish)
             total_gain = input_len + predict_output_len * 8
-            priority = total_gain * ratio**self.penalty_factor
+            reward = total_gain * ratio**self.penalty_factor
 
-        if abs(seq_group.deadline - predict_finish) < 1e-6:
-            density = priority / 1e-6
-        else:
-            density = priority / (seq_group.deadline - predict_finish)
-        concord_priority = (-density, remain_len)
+        return reward, remain_time
 
-        self.seq_group_slo_dict[seq_group.request_id] = concord_priority
-        seq_group.slo_priority = concord_priority
+    def get_priority(self, seq_group: SequenceGroup) -> float:
+        """
+        Calculate scheduling priority using Concord policy.
+        Now uses dynamic `interval_time` instead of fixed TBT constraint.
+        """
+
+        # 如果之前算过就直接返回
+        if self.seq_group_slo_dict.get(seq_group.request_id) is not None:
+            return self.seq_group_slo_dict[seq_group.request_id]
+        
+        if seq_group.request_type == RequestType.LATENCY or seq_group.request_type == RequestType.THROUGHPUT:
+            reward, remain_time = self.reward_estimation(seq_group)
+            if abs(remain_time) < 1e-6:
+                density = reward / 1e-6
+            else:
+                density = reward / remain_time
+            concord_priority = (-density, remain_time)
+            self.seq_group_slo_dict[seq_group.request_id] = concord_priority
+            seq_group.slo_priority = concord_priority
+        elif seq_group.request_type == RequestType.COLLECTIVE:
+            # 计算 collective 的 priority
+            total_reward = 0.0
+            total_remain_time = 0.0
+            for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
+                peer_reward, peer_remain_time = self.reward_estimation(peer_seq_group)
+                total_reward += peer_reward
+                total_remain_time = peer_remain_time
+            
+            if abs(total_remain_time) < 1e-6:
+                density = total_reward / 1e-6
+            else:
+                density = total_reward / total_remain_time
+            concord_priority = (-density, total_remain_time)
+
+            for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
+                self.seq_group_slo_dict[peer_seq_group.request_id] = concord_priority
+                peer_seq_group.slo_priority = concord_priority
+
         return concord_priority
