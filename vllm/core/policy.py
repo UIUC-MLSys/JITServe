@@ -178,7 +178,12 @@ class SRTFPolicy(BasePolicy):
         Calculate the priority based on the deadline of the sequence group.
         '''
         cur_time = time.time()
-        return (0, cur_time - seq_group.arrival_time - seq_group.deadline)
+        time_to_deadline = seq_group.arrival_time + seq_group.deadline - cur_time
+        if time_to_deadline > 0:
+            return (0, time_to_deadline)
+        else:
+            return (1, -time_to_deadline)
+        # return (0, cur_time - seq_group.arrival_time - seq_group.deadline)
     
 
 class LASPolicy(BasePolicy):

@@ -20,7 +20,7 @@ def calculate_request_counts(num_prompts, ratios):
     
     # Normalize ratios: collective requests are weighted by 10 (each collective = 10 single requests)
     # So the actual ratio for request counts is latency:throughput:collective/10
-    effective_collective_ratio = collective_ratio / 10
+    effective_collective_ratio = collective_ratio / 7
     total_ratio = latency_ratio + throughput_ratio + effective_collective_ratio
     
     # Calculate counts
