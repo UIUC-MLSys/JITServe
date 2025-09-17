@@ -94,6 +94,7 @@ async def send_single_request(
     model_name: str,
     client_deadline: float = 200,
     is_stream: bool = True,
+    served_time: float = 0.0,
 ) -> RequestOutput:
     """Send a single request to the model."""
     api_url = request_info.api_url
@@ -121,6 +122,7 @@ async def send_single_request(
             "num_stages": request_info.num_stages,
             "requests_per_stage": request_info.requests_per_stage,
             "accumulate_stage_ratio": request_info.accumulate_stage_ratio,
+            "served_time": served_time,
         }
         
         # Update the prompt in the payload
@@ -188,6 +190,7 @@ async def send_stage_requests(
     num_stages: int = 0,
     requests_per_stage: List[int] = None,
     collective_request: 'DeepResearchCollectiveRequest' = None,
+    init_st: float = 0.0,
 ) -> StageOutput:
     """Send all requests in a stage concurrently."""
     stage_output = StageOutput()
@@ -210,7 +213,7 @@ async def send_stage_requests(
             request, req_slo_constraint, sampling_params, client_id, api_url, 
             num_stages, requests_per_stage or [], accumulate_stage_ratio
         )
-        tasks.append(send_single_request(request_info, model_name, client_deadline, is_stream))
+        tasks.append(send_single_request(request_info, model_name, client_deadline, is_stream, time.perf_counter() - init_st))
     
     # Execute all requests in the stage concurrently
     request_outputs = await asyncio.gather(*tasks)
@@ -269,7 +272,8 @@ async def send_deepresearch_collective_request(
             is_stream,
             num_stages,
             requests_per_stage,
-            collective_request
+            collective_request,
+            st,
         )
         
         collective_output.stage_outputs.append(stage_output)

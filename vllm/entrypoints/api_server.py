@@ -175,11 +175,11 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
             logger.info(f"ToT collection_id: {collection_id}, stage: {stage}, best_match: {best_match}")
             if best_match and best_match.times:
                 if stage < len(best_match.times):
-                    return best_match.times[stage] / sum(best_match.times)
+                    return sum(best_match.times[:stage]) / sum(best_match.times)
                 else:
-                    return Default_ToT_Requests_Pattern[stage] / sum(Default_ToT_Requests_Pattern)
+                    return sum(Default_ToT_Requests_Pattern[:stage]) / sum(Default_ToT_Requests_Pattern)
             else:
-                return Default_ToT_Requests_Pattern[stage] / sum(Default_ToT_Requests_Pattern)
+                return sum(Default_ToT_Requests_Pattern[:stage]) / sum(Default_ToT_Requests_Pattern)
         else:  # deepresearch
             if collection_id not in collection_deepresearch_unfinished_dict:
                 collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
@@ -193,11 +193,11 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
             best_match = dynamic_clustering.find_best_match(unfinished_graph)
             logger.info(f"DeepResearch collection_id: {collection_id}, stage_id: {stage_id}, best_match: {best_match}")
             if best_match and best_match.times and stage_id < len(best_match.times):
-                ratio_1 = best_match.times[stage_id] / sum(best_match.times)
-                ratio_2 = Default_DeepResearch_Requests_Pattern[stage_id] / sum(Default_DeepResearch_Requests_Pattern)
+                ratio_1 = sum(best_match.times[:stage_id]) / sum(best_match.times)
+                ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id]) / sum(Default_DeepResearch_Requests_Pattern)
                 return max(ratio_1, ratio_2)
             else:
-                return Default_DeepResearch_Requests_Pattern[stage_id] / sum(Default_DeepResearch_Requests_Pattern)
+                return sum(Default_DeepResearch_Requests_Pattern[:stage_id]) / sum(Default_DeepResearch_Requests_Pattern)
 
     return default_ratio
 
@@ -263,7 +263,8 @@ async def generate(request: Request) -> Response:
         accumulate_stage_ratio = request_dict.pop("accumulate_stage_ratio", 0.0)
         num_stages = request_dict.pop("num_stages", Default_DeepResearch_Stage)
         requests_per_stage = request_dict.pop("requests_per_stage", None)
-        logger.info(f"collection_id: {collection_id}, num_stages: {num_stages}, requests_per_stage: {requests_per_stage}")
+        served_time = request_dict.pop("served_time", 0.0)
+        # logger.info(f"collection_id: {collection_id}, num_stages: {num_stages}, requests_per_stage: {requests_per_stage}, served_time: {served_time}")
         if requests_per_stage is not None:
             is_deepresearch = True
 
@@ -292,6 +293,8 @@ async def generate(request: Request) -> Response:
         if use_graph_matching or graph_matching_mode != "none":
             stage_ratio = calculate_stage_ratio(num_stages, requests_per_stage, prompt, collection_id, is_deepresearch, stage_id, accumulate_stage_ratio)
             request_info.deadline *= stage_ratio
+            request_info.deadline -= served_time
+            # request_info.deadline = (request_info.deadline - served_time) * stage_ratio
 
     assert engine is not None
     results_generator = engine.generate(prompt, request_info, 
