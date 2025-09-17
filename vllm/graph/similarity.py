@@ -6,12 +6,13 @@ import asyncio
 from itertools import permutations
 from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
+import copy
 from vllm.logger import init_logger
 
 logger = init_logger("vllm")
 
-Defalut_ToT_Stage = 4
-Defalut_ToT_Requests_Pattern = [3, 1, 3, 1]
+Default_ToT_Stage = 4
+Default_ToT_Requests_Pattern = [3, 1, 3, 1]
 
 Default_DeepResearch_Stage = 6
 Default_DeepResearch_Requests_Pattern = [1, 1, 1, 1, 1, 1]
@@ -47,8 +48,8 @@ class Graph:
 class ToTStructure:
     def __init__(
         self, 
-        stage_num: int = Defalut_ToT_Stage, 
-        request_per_stage: List[int] = Defalut_ToT_Requests_Pattern,
+        stage_num: int = Default_ToT_Stage, 
+        request_per_stage: List[int] = Default_ToT_Requests_Pattern,
         use_all_node: bool = False,
         stage_ratio_method: str = "execution_time"  # "execution_time" or "output_length"
     ) -> None:
@@ -92,8 +93,8 @@ class ToTStructure:
             # Ensure minimum stage time to avoid zero timing
             self.stage_finish_time.append(max(stage_elapsed, 0.001))
             self.current_time = time.time()
-            
-    def add_length(self, input_length: int, output_length: int) -> bool:
+
+    def add_length(self, input_length: int, output_length: Optional[int]) -> bool:
         """
         Add length information and check if the ToT structure is finished.
         
@@ -121,16 +122,16 @@ class ToTStructure:
         
         if self.use_all_node:
             # All-node approach: each request becomes a node
-            for stage_idx in range(len(self.stage_in_out_lengths)):
-                stage_nodes = []
+            # for stage_idx in range(len(self.stage_in_out_lengths)):
+            #     stage_nodes = []
                 
-                stage_requests = self.stage_in_out_lengths[stage_idx]
+            #     stage_requests = self.stage_in_out_lengths[stage_idx]
                 
-                # Create tuple for each request (input_len, output_len)
-                for input_len, output_len in stage_requests:
-                    stage_nodes.append((input_len, output_len))
-                    
-                nodes.append(stage_nodes)
+            #     # Create tuple for each request (input_len, output_len)
+            #     for input_len, output_len in stage_requests:
+            #         stage_nodes.append((input_len, output_len))
+
+            nodes = copy.deepcopy(self.stage_in_out_lengths)
         else:
             # Super-node approach: one node per stage
             for stage_idx in range(len(self.stage_in_out_lengths)):
@@ -162,26 +163,34 @@ class ToTStructure:
             stage_ratios = [1.0 / num_stages] * num_stages
         
         return Graph(nodes, stage_ratios, self.use_all_node, RequestApplication.TOT)
-    
-    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
+
+    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: Optional[int]) -> Graph:
         """Convert unfinished ToT structure to graph with predicted next stage."""
         nodes = []
         
         # Add completed stages
         if self.use_all_node:
             # All-node approach
-            for stage_idx in range(len(self.stage_in_out_lengths)):
-                stage_nodes = []
+            # for stage_idx in range(len(self.stage_in_out_lengths)-1):
+            #     stage_nodes = []
                 
-                stage_requests = self.stage_in_out_lengths[stage_idx]
+            #     stage_requests = self.stage_in_out_lengths[stage_idx]
                 
-                for input_len, output_len in stage_requests:
-                    stage_nodes.append((input_len, output_len))
+            #     for input_len, output_len in stage_requests:
+            #         stage_nodes.append((input_len, output_len))
                     
-                nodes.append(stage_nodes)
-            
-            # Add predicted stage
-            nodes.append([(input_length, predict_output_length)])
+            #     nodes.append(stage_nodes)
+
+            nodes = copy.deepcopy(self.stage_in_out_lengths)
+            stage_idx = len(self.stage_in_out_lengths) - 1
+
+            if stage_idx >= 0 and len(nodes[stage_idx]) < Default_ToT_Requests_Pattern[stage_idx]:
+                nodes[stage_idx].append((input_length, predict_output_length))
+            else:
+                nodes.append([(input_length, predict_output_length)])
+
+            # # Add predicted stage
+            # nodes.append([(input_length, predict_output_length)])
         else:
             # Super-node approach
             for stage_idx in range(len(self.stage_in_out_lengths)):
@@ -234,8 +243,8 @@ class DeepResearchStructure:
             self.completed_stages = 0
             self.is_finished = False
             self.current_time = time.time()
-    
-    def add_length(self, input_length: int, output_length: int) -> bool:
+
+    def add_length(self, input_length: int, output_length: Optional[int]) -> bool:
         """
         Add length information and check if the DeepResearch structure is finished.
         
@@ -285,16 +294,17 @@ class DeepResearchStructure:
         
         if self.use_all_node:
             # All-node approach: each request becomes a node
-            for stage_idx in range(len(self.stage_in_out_lengths)):
-                stage_nodes = []
+            # for stage_idx in range(len(self.stage_in_out_lengths)):
+            #     stage_nodes = []
                 
-                stage_requests = self.stage_in_out_lengths[stage_idx]
+            #     stage_requests = self.stage_in_out_lengths[stage_idx]
                 
-                # Create tuple for each request (input_len, output_len)
-                for input_len, output_len in stage_requests:
-                    stage_nodes.append((input_len, output_len))
+            #     # Create tuple for each request (input_len, output_len)
+            #     for input_len, output_len in stage_requests:
+            #         stage_nodes.append((input_len, output_len))
                     
-                nodes.append(stage_nodes)
+            #     nodes.append(stage_nodes)
+            nodes = copy.deepcopy(self.stage_in_out_lengths)
         else:
             # Super-node approach: one node per stage
             for stage_idx in range(len(self.stage_in_out_lengths)):
@@ -326,23 +336,30 @@ class DeepResearchStructure:
             stage_ratios = [1.0 / num_stages] * num_stages
         
         return Graph(nodes, stage_ratios, self.use_all_node, RequestApplication.DEEPRESEARCH)
-    
-    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: int) -> Graph:
+
+    def convert_to_unfinished_graph(self, input_length: int, predict_output_length: Optional[int]) -> Graph:
         """Convert unfinished DeepResearch structure to graph with predicted next stage."""
         nodes = []
         
         # Add completed stages
         if self.use_all_node:
             # All-node approach
-            for stage_idx in range(len(self.stage_in_out_lengths)):
-                stage_nodes = []
+            # for stage_idx in range(len(self.stage_in_out_lengths)):
+            #     stage_nodes = []
                 
-                stage_requests = self.stage_in_out_lengths[stage_idx]
+            #     stage_requests = self.stage_in_out_lengths[stage_idx]
                 
-                for input_len, output_len in stage_requests:
-                    stage_nodes.append((input_len, output_len))
+            #     for input_len, output_len in stage_requests:
+            #         stage_nodes.append((input_len, output_len))
                     
-                nodes.append(stage_nodes)
+            #     nodes.append(stage_nodes)
+            nodes = copy.deepcopy(self.stage_in_out_lengths)
+            stage_idx = len(self.stage_in_out_lengths) - 1
+
+            if stage_idx >= 0 and len(nodes[stage_idx]) < self.requests_per_stage[stage_idx]:
+                nodes[stage_idx].append((input_length, predict_output_length))
+            else:
+                nodes.append([(input_length, predict_output_length)])
             
             # Add predicted stage
             nodes.append([(input_length, predict_output_length)])
@@ -367,12 +384,12 @@ def predict_stage_ratio(query_graph: Graph, graph_set) -> float:
     best_graph: Graph | None = match_graph(query_graph, graph_set)
 
     if best_graph is None or best_graph.times is None:
-        return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+        return sum(Default_ToT_Requests_Pattern[:stage]) / sum(Default_ToT_Requests_Pattern)
     else:
         if stage < len(best_graph.times):
             return sum(best_graph.times[:stage]) / sum(best_graph.times)
         else:
-            return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+            return sum(Default_ToT_Requests_Pattern[:stage]) / sum(Default_ToT_Requests_Pattern)
 
     
 def match_graph(query_graph, graph_set, input_w=0.3, output_w=0.7, sigma_input=1.0, sigma_output=1.0) -> Graph:

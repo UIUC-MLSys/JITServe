@@ -160,8 +160,8 @@ async def send_collective_request(
             "target_output_length": request_info.request.output_len,  # Send output length to server
         }
         st = time.perf_counter()
-        
-        async def generate_thoughts(session, api_url, thought, payload) -> RequestOutput:
+
+        async def generate_thoughts(session, api_url, thought, payload, served_time) -> RequestOutput:
             new_payload = deepcopy(payload)
             
             input_prompt = prompt_format(thought)
@@ -172,6 +172,7 @@ async def send_collective_request(
             new_payload["sampling_params"]["max_tokens"] = 256
             # Use the output_len from request as target for stopping
             new_payload["target_output_length"] = request_info.request.output_len
+            new_payload["served_time"] = served_time
             
             output = RequestOutput()
             output.request_input = input_prompt
@@ -223,8 +224,8 @@ async def send_collective_request(
             output.success = True
             output.request_finish_time = time.perf_counter()
             return output
-        
-        async def value_thoughts(session, api_url, choices, payload) -> RequestOutput:
+
+        async def value_thoughts(session, api_url, choices, payload, served_time) -> RequestOutput:
             # construct the promote for the value model
             value_prompt = """
             Please evaluate the following thoughts on a scale from 1 to 10, where 10 represents the highest value (best) and 1 represents the lowest value. Use the following criteria for scoring:
@@ -247,6 +248,7 @@ async def send_collective_request(
             new_payload["sampling_params"]["max_tokens"] = 256
             # Use the output_len from request as target for stopping
             new_payload["target_output_length"] = request_info.request.output_len
+            new_payload["served_time"] = served_time
             input_length = len(new_payload['request_info']['prompt'])
             
             output = RequestOutput()
@@ -309,7 +311,7 @@ async def send_collective_request(
                     if round > 0:
                         thought += "\nPlease review and revise the response."
                     for _ in range(num_thoughts):
-                        tasks.append(generate_thoughts(session, api_url, thought, payload))
+                        tasks.append(generate_thoughts(session, api_url, thought, payload, time.perf_counter() - st))
                 
                 results: List[RequestOutput] = await asyncio.gather(*tasks)  
                 for generate_output in results:
@@ -321,7 +323,7 @@ async def send_collective_request(
                         choices.append(generate_output.request_output)
                         output_list.append(generate_output)
                 # value thoughts and select the top-k
-                value_output: RequestOutput = await value_thoughts(session, api_url, choices, payload)
+                value_output: RequestOutput = await value_thoughts(session, api_url, choices, payload, time.perf_counter() - st)
                 if not value_output.success:
                     print("Value thoughts failed")
                     print(value_output.error)
@@ -335,7 +337,7 @@ async def send_collective_request(
             
             ed = time.perf_counter()
             task_latency = ed - st
-            total_deadline = request_info.request.deadline / 1000 * 4
+            total_deadline = request_info.slo_constraint[2] * 4
             if task_latency > total_deadline:
                 slo_violation_penalty = (total_deadline) / task_latency
                 slo_violation_penalty = max(1e-6, min(1.0, slo_violation_penalty))**penalty_factor
@@ -423,7 +425,7 @@ async def send_request(
 
                     output.request_output = parse_output(generated_text, input_length)
                     output.request_latency = time.perf_counter() - st
-                    if output.request_latency <= request_info.request.deadline / 1000:
+                    if output.request_latency <= request_info.request.deadline:
                         output.finish_before_ddl = True
                     else:
                         output.finish_before_ddl = False
@@ -469,7 +471,14 @@ async def client_simulator(
     if len(input_requests) == 0:
         return []
     async for request in get_request(input_requests, poisson_lambda, burst):      
-        request_info = RequestInput(request, slo_constraint, sampling_params, client_id, api_url, tot_structure[1]*2)
+        req_slo_constraint = tuple(slo * (request.collection_id % 4 + 1) for slo in slo_constraint)
+        if request.request_type == RequestType.LATENCY:
+            request.deadline = req_slo_constraint[0] + req_slo_constraint[1] * request.output_len
+        elif request.request_type == RequestType.THROUGHPUT:
+            request.deadline = req_slo_constraint[2]
+        elif request.request_type == RequestType.COLLECTIVE:
+            request.deadline = req_slo_constraint[2] * tot_structure[1]*2
+        request_info = RequestInput(request, req_slo_constraint, sampling_params, client_id, api_url, tot_structure[1]*2)
 
         if request.request_type == RequestType.COLLECTIVE:
             tasks.append(asyncio.create_task(send_collective_request(request_info, tot_structure, penalty_factor, model_name, client_deadline, pbar, is_stream)))

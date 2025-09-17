@@ -200,12 +200,14 @@ async def send_stage_requests(
     if collective_request is not None and stage_requests:
         current_stage_id = stage_requests[0].stage_id
         accumulate_stage_ratio = collective_request.calculate_accumulate_stage_ratio(current_stage_id)
+
+    req_slo_constraint = tuple(slo * (collective_request.collection_id % 4 + 1) for slo in slo_constraint)
     
     # Create tasks for all requests in the stage
     tasks = []
     for request in stage_requests:
         request_info = RequestInput(
-            request, slo_constraint, sampling_params, client_id, api_url, 
+            request, req_slo_constraint, sampling_params, client_id, api_url, 
             num_stages, requests_per_stage or [], accumulate_stage_ratio
         )
         tasks.append(send_single_request(request_info, model_name, client_deadline, is_stream))

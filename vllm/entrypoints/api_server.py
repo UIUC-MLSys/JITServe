@@ -94,17 +94,17 @@ def send_and_update_request_info(request_info: RequestInfo, prompt: str):
         if result_len:
             request_info.output_len = result_len
 
-def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt: str, collection_id: int, stage_id: int = 0, accumulate_stage_ratio: float = 0.0) -> float:
+def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt: str, collection_id: int, is_deepresearch: bool = False, stage_id: int = 0, accumulate_stage_ratio: float = 0.0) -> float:
     """Calculate stage ratio based on graph matching mode and structure type."""
     global graph_matching_mode, graph_structure_type, use_total_deadline, use_all_node
     global collection_graph_set, dynamic_clustering, collection_graph_unfinished_dict, collection_deepresearch_unfinished_dict
     
     # Default ratios based on structure type
-    if graph_structure_type == "tot":
-        from vllm.graph.similarity import Defalut_ToT_Requests_Pattern, Defalut_ToT_Stage
+    if not is_deepresearch:
+        from vllm.graph.similarity import Default_ToT_Requests_Pattern, Default_ToT_Stage
         if use_total_deadline:
             return 1.0  # Use total deadline
-        default_ratio = Defalut_ToT_Requests_Pattern[min(stage_id, len(Defalut_ToT_Requests_Pattern)-1)] / sum(Defalut_ToT_Requests_Pattern)
+        default_ratio = Default_ToT_Requests_Pattern[min(stage_id, len(Default_ToT_Requests_Pattern)-1)] / sum(Default_ToT_Requests_Pattern)
     else:  # deepresearch
         if use_total_deadline:
             return 1.0  # Use total deadline
@@ -114,7 +114,7 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
         return default_ratio
     elif graph_matching_mode == "precise":
         # Oracle knowledge - return accumulate_stage_ratio for deepresearch
-        if graph_structure_type == "deepresearch" and accumulate_stage_ratio > 0.0:
+        if is_deepresearch and accumulate_stage_ratio > 0.0:
             logger.info(f"Using precise accumulate_stage_ratio: {accumulate_stage_ratio}")
             return accumulate_stage_ratio
         else:
@@ -123,7 +123,7 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
         # First stage matching only
         if stage_id == 0:
             # Use graph matching for first stage
-            if graph_structure_type == "tot":
+            if not is_deepresearch:
                 if collection_id not in collection_graph_unfinished_dict:
                     collection_graph_unfinished_dict[collection_id] = ToTStructure(use_all_node=use_all_node, stage_ratio_method=stage_ratio_method)
                 tot_structure = collection_graph_unfinished_dict[collection_id]
@@ -136,11 +136,11 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
                 stage = len(unfinished_graph.nodes)  # Define stage before the if block
                 if best_match and best_match.times:
                     if stage < len(best_match.times):
-                        return sum(best_match.times[:stage]) / sum(best_match.times)
+                        return best_match.times[stage] / sum(best_match.times)
                     else:
-                        return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+                        return Default_ToT_Requests_Pattern[stage] / sum(Default_ToT_Requests_Pattern)
                 else:
-                    return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
+                    return Default_ToT_Requests_Pattern[stage] / sum(Default_ToT_Requests_Pattern)
             else:  # deepresearch
                 if collection_id not in collection_deepresearch_unfinished_dict:
                     collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
@@ -153,15 +153,15 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
                 # Use dynamic clustering for both allnode and supernode methods
                 best_match = dynamic_clustering.find_best_match(unfinished_graph)
                 if best_match and best_match.times and stage_id < len(best_match.times):
-                    ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
-                    ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                    ratio_1 = best_match.times[stage_id] / sum(best_match.times)
+                    ratio_2 = Default_DeepResearch_Requests_Pattern[stage_id] / sum(Default_DeepResearch_Requests_Pattern)
                     return max(ratio_1, ratio_2)
                 else:
                     return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
         return default_ratio
     elif graph_matching_mode == "online":
         # Dynamic graph matching (current implementation)
-        if graph_structure_type == "tot":
+        if not is_deepresearch:
             if collection_id not in collection_graph_unfinished_dict:
                 collection_graph_unfinished_dict[collection_id] = ToTStructure(use_all_node=use_all_node, stage_ratio_method=stage_ratio_method)
             tot_structure = collection_graph_unfinished_dict[collection_id]
@@ -171,14 +171,15 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
             # Use dynamic clustering for both allnode and supernode methods
             best_match = dynamic_clustering.find_best_match(unfinished_graph)
-            stage = len(unfinished_graph.nodes)
+            stage = len(unfinished_graph.nodes)-1
+            logger.info(f"ToT collection_id: {collection_id}, stage: {stage}, best_match: {best_match}")
             if best_match and best_match.times:
                 if stage < len(best_match.times):
-                    return sum(best_match.times[:stage]) / sum(best_match.times)
+                    return best_match.times[stage] / sum(best_match.times)
                 else:
-                    return sum(Defalut_ToT_Requests_Pattern[:stage]) / sum(Defalut_ToT_Requests_Pattern)
+                    return Default_ToT_Requests_Pattern[stage] / sum(Default_ToT_Requests_Pattern)
             else:
-                return sum(Defalut_ToT_Requests_Pattern[:stage+1]) / sum(Defalut_ToT_Requests_Pattern)
+                return Default_ToT_Requests_Pattern[stage] / sum(Default_ToT_Requests_Pattern)
         else:  # deepresearch
             if collection_id not in collection_deepresearch_unfinished_dict:
                 collection_deepresearch_unfinished_dict[collection_id] = DeepResearchStructure(
@@ -190,13 +191,14 @@ def calculate_stage_ratio(num_stages: int, requests_per_stage: List[int], prompt
                 len(generation_tokenizer.encode(prompt, add_special_tokens=True)), None)
             # Use dynamic clustering for both allnode and supernode methods
             best_match = dynamic_clustering.find_best_match(unfinished_graph)
+            logger.info(f"DeepResearch collection_id: {collection_id}, stage_id: {stage_id}, best_match: {best_match}")
             if best_match and best_match.times and stage_id < len(best_match.times):
-                ratio_1 = sum(best_match.times[:stage_id+1]) / sum(best_match.times)
-                ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
+                ratio_1 = best_match.times[stage_id] / sum(best_match.times)
+                ratio_2 = Default_DeepResearch_Requests_Pattern[stage_id] / sum(Default_DeepResearch_Requests_Pattern)
                 return max(ratio_1, ratio_2)
             else:
-                return sum(Default_DeepResearch_Requests_Pattern[:stage_id+1]) / sum(Default_DeepResearch_Requests_Pattern)
-    
+                return Default_DeepResearch_Requests_Pattern[stage_id] / sum(Default_DeepResearch_Requests_Pattern)
+
     return default_ratio
 
 @app.get("/health")
@@ -224,9 +226,6 @@ async def generate(request: Request) -> Response:
     # Extract target_output_length if provided by client
     target_output_length = request_dict.pop("target_output_length", None)
     
-    # Extract accumulate_stage_ratio if provided by client
-    accumulate_stage_ratio = request_dict.pop("accumulate_stage_ratio", 0.0)
-    
     sampling_params_dict = request_dict.pop("sampling_params")
     # Add target_output_length to sampling params if provided
     if target_output_length is not None:
@@ -237,8 +236,9 @@ async def generate(request: Request) -> Response:
     prompt = request_info.get("prompt", "")
     request_info["client_id"] = client_id
     slo_constraint = tuple(request_dict["slo_constraint"])
-    req_idx = request_info.get("collection_id", 0) % 4 + 1
-    request_info["slo_constraint"] = tuple(slo * req_idx for slo in slo_constraint)
+    request_info["slo_constraint"] = slo_constraint
+    # req_idx = request_info.get("collection_id", 0) % 4 + 1
+    # request_info["slo_constraint"] = tuple(slo * req_idx for slo in slo_constraint)
     request_info = RequestInfo.from_json(request_info)
     if request_info.request_type == RequestType.THROUGHPUT:
         request_info.deadline = request_info.slo_constraint[2]
@@ -253,16 +253,22 @@ async def generate(request: Request) -> Response:
         if not use_default_length:
             threading.Thread(target=send_and_update_request_info, args=(request_info, prompt), daemon=True).start()
     
+    is_deepresearch = False
     # Handle graph matching and deadline adjustment for collective requests
     if request_info.request_type == RequestType.COLLECTIVE:
         collection_id = request_info.collection_id
         stage_id = request_info.stage_id if hasattr(request_info, 'stage_id') else 0
         logger.info(f"stage_id: {stage_id}")
+        # Extract accumulate_stage_ratio if provided by client
+        accumulate_stage_ratio = request_dict.pop("accumulate_stage_ratio", 0.0)
         num_stages = request_dict.pop("num_stages", Default_DeepResearch_Stage)
-        requests_per_stage = request_dict.pop("requests_per_stage", Default_DeepResearch_Requests_Pattern)
+        requests_per_stage = request_dict.pop("requests_per_stage", None)
+        logger.info(f"collection_id: {collection_id}, num_stages: {num_stages}, requests_per_stage: {requests_per_stage}")
+        if requests_per_stage is not None:
+            is_deepresearch = True
 
         # Initialize structures based on type
-        if graph_structure_type == "tot":
+        if not is_deepresearch:
             # Initialize ToT structure if needed
             if collection_id not in collection_graph_unfinished_dict:
                 collection_graph_unfinished_dict[collection_id] = ToTStructure(use_all_node=use_all_node, stage_ratio_method=stage_ratio_method)
@@ -270,7 +276,7 @@ async def generate(request: Request) -> Response:
             if tot_structure.is_finished:
                 tot_structure.reset()
                 
-        elif graph_structure_type == "deepresearch":
+        else:
             # Initialize DeepResearch structure if needed
 
             logger.info(f"DeepResearch collective_id: {collection_id}, stages: {num_stages}, requests: {requests_per_stage}")
@@ -284,7 +290,7 @@ async def generate(request: Request) -> Response:
 
         # Calculate stage ratio based on matching mode and structure
         if use_graph_matching or graph_matching_mode != "none":
-            stage_ratio = calculate_stage_ratio(num_stages, requests_per_stage, prompt, collection_id, stage_id, accumulate_stage_ratio)
+            stage_ratio = calculate_stage_ratio(num_stages, requests_per_stage, prompt, collection_id, is_deepresearch, stage_id, accumulate_stage_ratio)
             request_info.deadline *= stage_ratio
 
     assert engine is not None
@@ -312,7 +318,7 @@ async def generate(request: Request) -> Response:
             
         # Track collection completion for graph learning (regardless of matching mode)
         if request_info.request_type == RequestType.COLLECTIVE:
-            if graph_structure_type == "tot":
+            if not is_deepresearch:
                 if collection_id in collection_graph_unfinished_dict:
                     tot_structure = collection_graph_unfinished_dict[collection_id]
                     collection_finish = tot_structure.add_length(
@@ -327,8 +333,8 @@ async def generate(request: Request) -> Response:
                             # Use dynamic clustering for both allnode and supernode methods
                             dynamic_clustering.add_finished_request(finished_graph)
                         tot_structure.is_finished = True
-                        
-            elif graph_structure_type == "deepresearch":
+
+            elif is_deepresearch:
                 if collection_id in collection_deepresearch_unfinished_dict:
                     deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
                     collection_finish = deepresearch_structure.add_length(
@@ -364,7 +370,7 @@ async def generate(request: Request) -> Response:
 
     # Track collection completion for graph learning (regardless of matching mode)
     if request_info.request_type == RequestType.COLLECTIVE:
-        if graph_structure_type == "tot":
+        if not is_deepresearch:
             if collection_id in collection_graph_unfinished_dict:
                 tot_structure = collection_graph_unfinished_dict[collection_id]
                 collection_finish = tot_structure.add_length(
@@ -379,7 +385,7 @@ async def generate(request: Request) -> Response:
                         dynamic_clustering.add_finished_request(finished_graph)
                     tot_structure.is_finished = True
                     
-        elif graph_structure_type == "deepresearch":
+        elif is_deepresearch:
             if collection_id in collection_deepresearch_unfinished_dict:
                 deepresearch_structure = collection_deepresearch_unfinished_dict[collection_id]
                 collection_finish = deepresearch_structure.add_length(

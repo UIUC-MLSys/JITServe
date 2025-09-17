@@ -176,13 +176,13 @@ def calculate_metrics(
                 if task_type == 0:  # latency-sensitive
                     prefill_tokens = request_input_token_length if meets_ttft else 0
                     decode_tokens = meet_tbt_count
-                else:  # throughput / collective
-                    if meets_ttlt:
-                        prefill_tokens = request_input_token_length
-                        decode_tokens = request_output_token_length
-                    else:
-                        prefill_tokens = 0
-                        decode_tokens = 0
+                elif (meets_ttlt and task_type == 1) or \
+                       (outputs[i][req_idx].finish_before_ddl and task_type == 2):  # throughput / collective
+                    prefill_tokens = request_input_token_length
+                    decode_tokens = request_output_token_length
+                else:
+                    prefill_tokens = 0
+                    decode_tokens = 0
 
                 token_goodput = prefill_tokens + 8 * decode_tokens
                 time_window_token_goodput[window_end][task_type] += token_goodput / time_window_seconds
@@ -201,6 +201,9 @@ def calculate_metrics(
                     "meet_tbt_count": meet_tbt_count,
                     "total_tbt_count": total_tbt_count,                    
                     "meet_ttlt": meets_ttlt,
+                    "token_goodput": token_goodput,
+                    "prefill_tokens": prefill_tokens,
+                    "decode_tokens": decode_tokens,
                 })
 
     if request_completed[3] == 0:
@@ -367,37 +370,39 @@ def print_benchmark_results(metrics: BenchmarkMetrics, task_metrics: TaskMetrics
     type_prefill_token = [0.0, 0.0, 0.0, 0.0]
     type_decode_token = [0.0, 0.0, 0.0, 0.0]
     type_weighted_token = [0.0, 0.0, 0.0, 0.0]
-    type_total_weighted = [0.0, 0.0, 0.0, 0.0]
+    # type_total_weighted = [0.0, 0.0, 0.0, 0.0]
 
     for req in metrics.request_details:
         rtype = req["request_type"]  # 0=Latency, 1=Throughput, 2=Collective
 
-        # prefill / decode token goodput 按请求类型规则
-        if rtype == 0:  # Latency-sensitive
-            prefill_tokens = req["input_len"] if req["meet_ttft"] else 0
-            decode_tokens = req["meet_tbt_count"]
-        else:  # Throughput / Collective
-            if req["meet_ttlt"]:
-                prefill_tokens = req["input_len"]
-                decode_tokens = req["output_len"]
-            else:
-                prefill_tokens = 0
-                decode_tokens = 0
+        # # prefill / decode token goodput 按请求类型规则
+        # if rtype == 0:  # Latency-sensitive
+        #     prefill_tokens = req["input_len"] if req["meet_ttft"] else 0
+        #     decode_tokens = req["meet_tbt_count"]
+        # elif rtype == 1:  # Throughput / Collective
+        #     if req["meet_ttlt"]:
+        #         prefill_tokens = req["input_len"]
+        #         decode_tokens = req["output_len"]
+        #     else:
+        #         prefill_tokens = 0
+        #         decode_tokens = 0
+        # else:
 
-        weighted_tokens = w_prefill * prefill_tokens + w_decode * decode_tokens
+
+        # weighted_tokens = w_prefill * prefill_tokens + w_decode * decode_tokens
         total_weighted_tokens = w_prefill * req["input_len"] + w_decode * req["output_len"]
 
         # 累加各类别
-        type_prefill_token[rtype] += prefill_tokens
-        type_decode_token[rtype] += decode_tokens
-        type_weighted_token[rtype] += weighted_tokens
-        type_total_weighted[rtype] += total_weighted_tokens
+        type_prefill_token[rtype] += req["prefill_tokens"]
+        type_decode_token[rtype] += req["decode_tokens"]
+        type_weighted_token[rtype] += req["token_goodput"]
+        # type_total_weighted[rtype] += total_weighted_tokens
 
         # 累加总计
-        type_prefill_token[3] += prefill_tokens
-        type_decode_token[3] += decode_tokens
-        type_weighted_token[3] += weighted_tokens
-        type_total_weighted[3] += total_weighted_tokens
+        type_prefill_token[3] += req["prefill_tokens"]
+        type_decode_token[3] += req["decode_tokens"]
+        type_weighted_token[3] += req["token_goodput"]
+        # type_total_weighted[3] += total_weighted_tokens
 
     # 请求级统计表格
     print("{:<15} {:<10} {:<10} {:<10} {:<10} {:<10} {:<15}".format(
@@ -682,26 +687,11 @@ async def benchmark(
 
     print(f"Traffic request rate: {request_rate}")
     print(f"Maximum request concurrency: {max_concurrency}")
-    
-    for request in requests:
-        if request.request_type == RequestType.LATENCY:
-            request.deadline = slo_constraint[0] + slo_constraint[1] * request.output_len
-        elif request.request_type == RequestType.THROUGHPUT:
-            request.deadline = slo_constraint[2]
-        elif request.request_type == RequestType.COLLECTIVE:
-            request.deadline = slo_constraint[2]
-        request.deadline *= 1000
 
     pbar = None if disable_tqdm else tqdm(total=len(requests))
 
     benchmark_start_time = time.perf_counter()
-    # outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
-    #if request_rate is None:
-    #    request_per_user = [requests]
-    #else:
-    #    request_per_user = BaseDataset.divide_by_rate(requests, request_rate)
     request_per_user = [requests]
-        
     
     client_tasks = []
     for client_id, input_requests in enumerate(request_per_user):
