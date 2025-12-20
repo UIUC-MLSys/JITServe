@@ -1053,6 +1053,15 @@ void paged_attention_custom_launcher(
     case 32:                                                      \
       CALL_CUSTOM_LAUNCHER(T, KVT, KV_DTYPE, 32, HEAD_SIZE);      \
       break;                                                      \
+    case 64:                                                      \
+      CALL_CUSTOM_LAUNCHER(T, KVT, KV_DTYPE, 64, HEAD_SIZE);      \
+      break;                                                      \
+    case 128:                                                     \
+      CALL_CUSTOM_LAUNCHER(T, KVT, KV_DTYPE, 128, HEAD_SIZE);     \
+      break;                                                      \
+    case 256:                                                     \
+      CALL_CUSTOM_LAUNCHER(T, KVT, KV_DTYPE, 256, HEAD_SIZE);     \
+      break;                                                      \
     default:                                                      \
       TORCH_CHECK(false, "Unsupported block size: ", block_size); \
       break;                                                      \

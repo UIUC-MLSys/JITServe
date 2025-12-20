@@ -800,6 +800,15 @@ void paged_attention_v1_launcher(
     case 32:                                                      \
       CALL_V1_LAUNCHER_SPARSITY(T, CACHE_T, 32, KV_DTYPE);        \
       break;                                                      \
+    case 64:                                                      \
+      CALL_V1_LAUNCHER_SPARSITY(T, CACHE_T, 64, KV_DTYPE);        \
+      break;                                                      \
+    case 128:                                                     \
+      CALL_V1_LAUNCHER_SPARSITY(T, CACHE_T, 128, KV_DTYPE);       \
+      break;                                                      \
+    case 256:                                                     \
+      CALL_V1_LAUNCHER_SPARSITY(T, CACHE_T, 256, KV_DTYPE);       \
+      break;                                                      \
     default:                                                      \
       TORCH_CHECK(false, "Unsupported block size: ", block_size); \
       break;                                                      \

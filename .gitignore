@@ -222,6 +222,8 @@ simulation_*_*.txt
 # Test results
 test-connection/
 benchmarks/utils/*.png
+fig/
+batch_result/
 
 # Linting
 actionlint
