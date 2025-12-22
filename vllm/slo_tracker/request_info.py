@@ -14,7 +14,7 @@ class RequestTypeWeight(Enum):
     
 class RequestPhaseWeight(Enum):
     PREFILL = 1
-    DECODE = 2
+    DECODE = 8
 
 class RequestApplication(Enum):
     TOT = 1
@@ -122,3 +122,28 @@ class RequestInfo:
             'slo_constraint': self.slo_constraint,
             'client_id': self.client_id,
         }
+    
+class RequestConcordMetrics:
+    def __init__(self, arrival_time) -> None:
+        self.arrival_time: float = arrival_time
+        self.prompt_len: int = 0
+        self.output_len: int = 0
+        self.TTFT: float = None
+        self.TBT: List[float] = []
+        self.TTLT: float = None
+        self.new_prefill_tokens: int = 0
+        self.new_decode_tokens: int = 0
+        # should set to None when in swapped/waiting queue
+        self.last_schedule_time: float = None
+        self.service_gain: float = 0
+        
+    def reset(self) -> None:
+        self.prompt_len = 0
+        self.output_len = 0
+        self.TTFT = None
+        self.TBT = []
+        self.TTLT = None
+        self.new_prefill_tokens = 0
+        self.new_decode_tokens = 0
+        self.last_schedule_time = None
+        self.service_gain = 0

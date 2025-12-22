@@ -19,7 +19,7 @@ from vllm.inputs.parse import is_encoder_decoder_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.request_info import RequestType, RequestInfo, RequestPhaseWeight
+from vllm.slo_tracker.request_info import RequestType, RequestInfo, RequestConcordMetrics
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 from vllm.logger import init_logger
@@ -130,32 +130,6 @@ class RequestMetrics:
     scheduler_time: Optional[float] = None
     model_forward_time: Optional[float] = None
     model_execute_time: Optional[float] = None
-  
-    
-class RequestConcordMetrics:
-    def __init__(self, arrival_time) -> None:
-        self.arrival_time: float = arrival_time
-        self.prompt_len: int = 0
-        self.output_len: int = 0
-        self.TTFT: float = None
-        self.TBT: List[float] = []
-        self.TTLT: float = None
-        self.new_prefill_tokens: int = 0
-        self.new_decode_tokens: int = 0
-        # should set to None when in swapped/waiting queue
-        self.last_schedule_time: float = None
-        self.service_gain: float = 0
-        
-    def reset(self) -> None:
-        self.prompt_len = 0
-        self.output_len = 0
-        self.TTFT = None
-        self.TBT = []
-        self.TTLT = None
-        self.new_prefill_tokens = 0
-        self.new_decode_tokens = 0
-        self.last_schedule_time = None
-        self.service_gain = 0
 
 class SequenceDataDelta(
         msgspec.Struct,
@@ -757,9 +731,8 @@ class SequenceGroup:
         self.trace_headers = trace_headers
         self.priority = priority
         
-        # concord related args
+        # slo/jitserve related args
         self.num_cumulative_preemption = 0
-        self.slo_priority = 0
         self.collection_id = request_info.collection_id
         self.deadline = (
             request_info.deadline
@@ -770,17 +743,13 @@ class SequenceGroup:
         self.TBT_constraint = request_info.slo_constraint[1]
         self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
-        self.request_weight = request_info.request_weight
-        self.prediction_task = request_info.prediction_task
-        self.real_output_len = request_info.real_output_len
         self.request_info = request_info
-        self.input_len = request_info.input_len
         self.concord_metrics = RequestConcordMetrics(time.time())
 
         self.cached_request_output = None
 
         for seq in self.seqs:
-            seq.real_output_len = self.real_output_len
+            seq.real_output_len = request_info.real_output_len
 
     @property
     def prompt(self) -> Optional[str]:
@@ -914,115 +883,6 @@ class SequenceGroup:
         seq = self.first_seq
         if not seq.is_finished():
             seq.data.update_num_computed_tokens(num_new_computed_tokens)
-                
-    def update_concord_metrics(self, cur_time: float, penalty_factor: int) -> None:
-        # cur_time: s
-        seq = self.seqs[0]
-        
-        output_len = seq.get_output_len()
-        input_len = seq.get_prompt_len()
-        
-        if output_len >= 1 and self.concord_metrics.TTFT is None:
-            self.concord_metrics.TTFT = cur_time - self.concord_metrics.arrival_time
-            self.concord_metrics.service_gain += self.service_compute(cur_time, penalty_factor)
-                
-        delta_input_length = input_len - self.concord_metrics.prompt_len 
-        delta_output_lenth = output_len - self.concord_metrics.output_len
-        self.concord_metrics.new_prefill_tokens = delta_input_length
-        self.concord_metrics.new_decode_tokens = delta_output_lenth
-        # compute service gain
-
-        self.concord_metrics.service_gain += self.service_compute(time.time(), penalty_factor)
-        if self.concord_metrics.last_schedule_time is not None and \
-            delta_output_lenth > 0:
-                delta_time = cur_time - self.concord_metrics.last_schedule_time
-                self.concord_metrics.TBT.append(delta_time / delta_output_lenth)
-        
-        # only update last_schedule_time when new token is generated
-        if delta_output_lenth > 0:          
-            self.concord_metrics.last_schedule_time = cur_time
-            
-        self.concord_metrics.prompt_len = input_len
-        self.concord_metrics.output_len = output_len
-    
-    # Note(wei): this function is used to calculate the service time of a request
-    # and would be influenced by predict decode length (rely on deadline)  
-    # There is actually another penatly for missing deadline, but we only use it in slo policy 
-    # But this function when requests in waiting queue seems to be zero
-    def service_compute(
-        self,
-        cur_time: float,
-        penalty_factor: int = 1,
-    ) -> float:
-        # cur_timr: s, serve_time: ms, time_between_token: s
-        prefill_len = self.first_seq.get_prefill_len()
-        decode_len = self.first_seq.get_output_len()
-        
-        prefill_weight = 1
-        decode_weight = 8
-    
-        generated_prefill_tokens = self.concord_metrics.new_prefill_tokens
-        generated_decode_tokens = self.concord_metrics.new_decode_tokens
-
-        if self.concord_metrics.TTFT is not None:
-            req_TTFT = self.concord_metrics.TTFT
-            if req_TTFT > self.TTFT_constraint:
-                req_TTFT = self.TTFT_constraint
-            desire_decode_len = (cur_time - req_TTFT - self.arrival_time) / self.TBT_constraint
-        else:
-          desire_decode_len = 0
-          
-        # print(f"collection id: {self.collection_id} {generated_prefill_tokens} {generated_decode_tokens} | "
-        #       f"prefill_len: {prefill_len} decode_len: {decode_len} | "
-        #       f"input_len: {self.concord_metrics.prompt_len} output_len: {self.concord_metrics.output_len} | "
-        #       f"desire_decode_len: {desire_decode_len} service_gain: {self.concord_metrics.service_gain}")
-
-        # 计算预填充和解码的权重
-        # latency-sensitive requests
-        if self.request_type == RequestType.LATENCY:
-            service = 0
-            # in prefilling stage
-            # the service gain is computed after TTFT is set
-            if self.concord_metrics.service_gain == 0 and self.concord_metrics.TTFT is not None:
-                prefill_ratio = self.TTFT_constraint / self.concord_metrics.TTFT
-                prefill_ratio = max(1e-6, min(1, prefill_ratio))**penalty_factor
-                service += prefill_ratio * prefill_len * prefill_weight
-            # in decoding stage
-            # the service gain is computed for each iteration
-            if generated_decode_tokens != 0:
-                if desire_decode_len == 0:
-                    service += 1 * decode_weight * generated_decode_tokens
-                else:
-                    decode_ratio = decode_len / desire_decode_len
-                    decode_ratio = max(1e-6, min(1, decode_ratio))**penalty_factor
-                    service += decode_ratio * decode_weight * generated_decode_tokens
-            return service
-      
-        # throughput-sensitive requests
-        elif self.request_type == RequestType.THROUGHPUT or self.request_type == RequestType.COLLECTIVE:
-            # in prefilling stage
-            # no TTFT constraint
-            if generated_prefill_tokens != 0:
-                service = 0
-            # in decoding stage
-            # the service gain is computed for whole decoding stage, with a deadline penalty
-            elif generated_decode_tokens != 0:
-                if self.concord_metrics.TTLT is None:
-                    service = 0
-                else:
-                    utility = prefill_len * prefill_weight + decode_len * decode_weight
-                    if self.request_type == RequestType.COLLECTIVE:
-                        deadline_penalty = 1
-                    else:
-                        deadline_penalty = min(1, (self.deadline / self.concord_metrics.TTLT)**penalty_factor)
-                    service = utility * deadline_penalty
-            else:
-                service = 0
-            
-            return service
-    
-        else:
-            raise ValueError("Unknown request type")
 
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0

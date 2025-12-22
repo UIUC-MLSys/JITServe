@@ -386,7 +386,7 @@ class EngineArgs:
         parser.add_argument('--block-size',
                             type=int,
                             default=EngineArgs.block_size,
-                            choices=[8, 16, 32],
+                            choices=[8, 16, 32, 64, 128, 256, 512, 1024],
                             help='Token block size for contiguous chunks of '
                             'tokens. This is ignored on neuron devices and '
                             'set to max-model-len')
@@ -846,7 +846,9 @@ class EngineArgs:
 
         parser.add_argument(
             '--scheduling-policy',
-            choices=['fcfs', 'priority', 'vtc', 'las', 'concord', 'sjf', 'srtf'],
+            choices=[
+                'fcfs', 'priority', 'autellix', 'jitserve', 'ltr', 'srtf'
+            ],
             default="fcfs",
             help='The scheduling policy to use. "fcfs" (first come first served'
             ', i.e. requests are handled in order of arrival; default) '
@@ -858,28 +860,32 @@ class EngineArgs:
             '--penalty-factor',
             type=int,
             default=1,
-            help="The penalty factor to be applied to the service gain and concord priority"
+            help="The penalty factor to be applied to the service gain and "
+            "slo/jitserve priority"
         )
 
         parser.add_argument(
             '--top-k-selection',
             type=int,
             default=1,
-            help="The top-k*batch size selection to be applied to the service gain and concord priority"
+            help="The top-k*batch size selection to be applied to the service gain "
+            "and slo/jitserve priority"
         )
 
         parser.add_argument(
             '--search-strategy',
             choices=['sliding_window', 'length_bin'],
             default="sliding_window",
-            help='The search strategy to use for concord length scheduling method.'
+            help='The search strategy to use for slo/jitserve length scheduling '
+            'method.'
         )
 
         parser.add_argument(
             '--max-swaps-per-iter',
             type=int,
             default=3,
-            help='The maximum number of swaps to perform in each scheduling iteration when using concord scheduling method.'
+            help='The maximum number of swaps to perform in each scheduling iteration '
+            'when using slo/jitserve scheduling method.'
         )
 
         return parser

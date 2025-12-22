@@ -1,6 +1,6 @@
 import json
 from typing import List, Optional, Tuple
-from vllm.graph.similarity import Graph, RequestApplication
+from similarity import Graph, RequestApplication
 from vllm.logger import init_logger
 
 logger = init_logger("vllm")

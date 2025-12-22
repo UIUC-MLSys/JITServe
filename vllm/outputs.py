@@ -5,7 +5,7 @@ from typing import Sequence as GenericSequence
 from typing import Union
 
 from vllm.lora.request import LoRARequest
-from vllm.request_info import RequestType
+from vllm.slo_tracker.request_info import RequestType
 from vllm.sampling_params import RequestOutputKind
 from vllm.sequence import (PromptLogprobs, RequestMetrics, SampleLogprobs,
                            SequenceGroup, SequenceGroupBase, SequenceStatus)

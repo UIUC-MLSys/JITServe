@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple
 # Import RequestInfo from vllm.request_info
 import sys
 sys.path.append('../../')
-from vllm.request_info import RequestInfo
+from vllm.slo_tracker.request_info import RequestInfo
 
 
 class RequestType(Enum):

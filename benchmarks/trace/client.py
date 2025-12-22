@@ -11,7 +11,7 @@ from copy import deepcopy
 from tqdm import tqdm
 from typing import List, Tuple, AsyncGenerator, Optional
 from vllm import SamplingParams
-from vllm.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo, RequestType
 
 class RequestInput:
     def __init__(
@@ -105,7 +105,7 @@ async def get_request(
     # if burst using the burst pattern
     if burst:
         print("Using BurstGPT pattern.")
-        df = pd.read_csv('/home/jovyan/workspace/Concord/benchmarks/trace/BurstGPT_1.csv')
+        df = pd.read_csv('/home/exouser/Concord/benchmarks/trace/BurstGPT_1.csv')
         timestamps = df['Timestamp'].tolist()
         baseline_timestamp = timestamps[99]
         timestamps = [ts - baseline_timestamp for ts in timestamps[100:100 + request_num]]

@@ -16,7 +16,7 @@ from .trace_deepresearch import (
     RequestType, DeepResearchCollectiveRequest,
     DeepResearchStage, DeepResearchRequest
 )
-from vllm.request_info import RequestInfo
+from vllm.slo_tracker.request_info import RequestInfo
 
 
 class RequestInput:
@@ -318,7 +318,7 @@ async def get_request_generator(
     # if burst using the burst pattern
     if burst:
         print("Using BurstGPT pattern for DeepResearch collective requests.")
-        df = pd.read_csv('/home/jovyan/workspace/Concord/benchmarks/trace/BurstGPT_1.csv')
+        df = pd.read_csv('/home/exouser/Concord/benchmarks/trace/BurstGPT_1.csv')
         timestamps = df['Timestamp'].tolist()
         baseline_timestamp = timestamps[99]
         timestamps = [ts - baseline_timestamp for ts in timestamps[100:100 + request_num]]

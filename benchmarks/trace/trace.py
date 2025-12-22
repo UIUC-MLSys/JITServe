@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 
 # Import RequestInfo
 sys.path.append('../../')
-from vllm.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo, RequestType
 
 support_datasets = ['alpaca', 'lmsys_chat', 'ToT', 'mix']
 throughput_hint_words = ['code', 'function', 'method', 'class', 'variable', 'python', 'test']

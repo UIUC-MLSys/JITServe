@@ -1,21 +1,22 @@
 #!/bin/bash
 
-#之前的测试参数
-# bs=8, arrival_rate=1.5, penalty_factor=2, slo_constraint="1,0.1,10", num_prompts=6000
-# bs=16, arrival_rate=2.5, penalty_factor=2, slo_constraint="1,0.1,10", num_prompts=6000
-# bs=32, arrival_rate=4.0, penalty_factor=2, slo_constraint="1,0.1,10", num_prompts=10000
+# 4.0 800 4/8 for Llama-3.1-8B
+# 4.0 2000 16/32/64 for Llama-3.1-8B
+# 10.0 800 4/8 for Qwen-2.5-14B
+# 10.0 2000 4/8 for Qwen-2.5-14B
+# 10.0 4000 16/32/64 for Qwen-2.5-14B
 
 # 定义测试参数
-policies=("concord")
-rates=(4.0)
+policies=("fcfs")
+rates=(10.0)
 batch_sizes=(16)
 penalty_factors=(100)
 search_strategy="sliding_window"
-top_k_selection=3
+top_k_selection=1
 #output_dir="batch_profile_results_debug"
 output_dir="length_motivation"
-#model="Qwen/Qwen2.5-14B-Instruct"
-model="meta-llama/Llama-3.1-8B-Instruct"
+model="Qwen/Qwen2.5-14B-Instruct"
+#model="meta-llama/Llama-3.1-8B-Instruct"
 qrf_model_path="/home/exouser/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl"
 qrf_tokenizer_path="/home/exouser/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl"
 
@@ -98,7 +99,7 @@ for rate in "${rates[@]}"; do
                 # 运行性能测试
                 echo "启动客户端..."
                 #output_file="${output_dir}/exp_qwen_${policy}_${rate}_${batch_size}_${penalty_factor}.log"
-                output_file="${output_dir}/test-4.0-b3-slo-${policy}-deadline-v3.log"
+                output_file="${output_dir}/hetero-qwen-16.log"
                 python3 benchmarks/benchmark_scheduler.py \
                     --model "$model" \
                     --policy "$policy" \
@@ -106,7 +107,7 @@ for rate in "${rates[@]}"; do
                     --penalty-factor "$penalty_factor" \
                     --batch-size "$batch_size" \
                     --slo-constraint "1,0.1,10" \
-                    --num-prompts 2000 > "$output_file" 2>&1
+                    --num-prompts 800 > "$output_file" 2>&1
 
                 # 停止服务器
                 echo "停止服务器..."

@@ -35,7 +35,7 @@ except ImportError:
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from benchmarks.trace import (client_simulator, send_request, send_collective_request, RequestInput, TaskOutput,
                               RequestOutput, Trace, BaseDataset)
-from vllm.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo, RequestType
 
 @dataclass
 class BenchmarkMetrics:
@@ -111,16 +111,17 @@ def calculate_metrics(
                 
                 meets_ttft = (ttft <= req_slo_constraint[0]) if req_slo_constraint else True
                 meets_tbt = all(tbt <= req_slo_constraint[1] for tbt in tbt_list) if req_slo_constraint else True
-                meets_ttlt = (ttlt <= req_slo_constraint[2]) if req_slo_constraint else True
+                if task_type == 2:
+                    meets_ttlt = outputs[i][req_idx].finish_before_ddl if req_slo_constraint else True
+                else:
+                    meets_ttlt = (ttlt <= req_slo_constraint[2]) if req_slo_constraint else True
                 
                 if req_slo_constraint:
                     if meets_ttft: slo_ttft_meet[task_type] += 1
                     if meets_tbt: slo_tbt_meet[task_type] += 1
                     if meets_ttlt: slo_ttlt_meet[task_type] += 1
                     
-                    if (meets_ttft and meets_tbt and task_type == 0) or \
-                        (meets_ttlt and task_type == 1) or \
-                        (outputs[i][req_idx].finish_before_ddl and task_type == 2):
+                    if (meets_ttft and meets_tbt and task_type == 0) or meets_ttlt:
                         request_slo_meet[task_type] += 1
                         request_slo_meet[3] += 1
                         
@@ -166,9 +167,7 @@ def calculate_metrics(
 
                 # request goodput：是否满足 SLO 就算 1 个
                 if req_slo_constraint:
-                    if (meets_ttft and meets_tbt and task_type == 0) or \
-                       (meets_ttlt and task_type == 1) or \
-                       (outputs[i][req_idx].finish_before_ddl and task_type == 2):
+                    if (meets_ttft and meets_tbt and task_type == 0) or meets_ttlt:
                         time_window_request_goodput[window_end][task_type] += 1 / time_window_seconds
                         time_window_request_goodput[window_end][3] += 1 / time_window_seconds
 

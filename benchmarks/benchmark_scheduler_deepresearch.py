@@ -22,7 +22,7 @@ from vllm.sampling_params import RequestOutputKind
 from trace.trace_deepresearch import (
     DeepResearchTrace, DeepResearchCollectiveRequest, RequestType
 )
-from vllm.request_info import RequestInfo
+from vllm.slo_tracker.request_info import RequestInfo
 from trace.client_deepresearch import (
     deepresearch_client_simulator, CollectiveOutput, StageOutput, RequestOutput
 )

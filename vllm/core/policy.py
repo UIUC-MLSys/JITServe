@@ -1,14 +1,13 @@
 import time
-import numpy as np
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import (Callable, Deque, Dict, Iterable, List, Optional, Set,
-                    Tuple, Union)
-from vllm.request_info import RequestType, RequestPhaseWeight
-from vllm.sequence import SequenceGroup, Sequence, SequenceStatus
+from typing import (Deque, Dict, List, Tuple, Union)
+from vllm.slo_tracker.request_info import RequestType, RequestPhaseWeight
+from vllm.sequence import SequenceGroup
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
+DEFAULT_SCHEDULE_INTERVAL = 0.02 # 20 ms
 
 class BasePolicy(ABC):
     '''
@@ -56,17 +55,24 @@ class BasePolicy(ABC):
         '''
         if self.last_schedule_time is None:
             self.last_schedule_time = cur_time
-            self.intervals.append(0.02)
+            self.intervals.append(DEFAULT_SCHEDULE_INTERVAL)
         else:
             new_interval = (cur_time - self.last_schedule_time) / self.schedule_interval
             self.intervals.append(new_interval)
             self.last_schedule_time = cur_time
         
-        # 求平均
         if self.intervals:
             self.interval_time = sum(self.intervals) / len(self.intervals)
         else:
-            self.interval_time = 0.02
+            self.interval_time = DEFAULT_SCHEDULE_INTERVAL
+
+    def _get_interval_time(self) -> float:
+        return self.interval_time if self.interval_time else DEFAULT_SCHEDULE_INTERVAL
+
+    @staticmethod
+    def _safe_ratio(numer: float, denom: float) -> float:
+        """Clamp ratio between 1e-6 and 1.0 to avoid blowups."""
+        return max(1e-6, min(1.0, numer / denom))
             
      
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
@@ -102,9 +108,11 @@ class BasePolicy(ABC):
         policy_map = {
             "sjf": SJFPolicy,
             "srtf": SRTFPolicy,
-            "concord": ConcordPolicy,
+            "concord": SLOPolicy,
+            "jitserve": SLOPolicy,
+            "slo": SLOPolicy,
             "fcfs": FCFSPolicy,
-            "las": LASPolicy,
+            "autellix": LASPolicy,
         }
 
         # Check if policy name exists in the mapping
@@ -182,9 +190,7 @@ class SRTFPolicy(BasePolicy):
         if time_to_deadline > 0:
             return (0, time_to_deadline)
         else:
-            return (1, -time_to_deadline)
-        # return (0, cur_time - seq_group.arrival_time - seq_group.deadline)
-    
+            return (1, -time_to_deadline)    
 
 class LASPolicy(BasePolicy):
     '''
@@ -216,7 +222,7 @@ class LASPolicy(BasePolicy):
         return (service, seq_group.arrival_time)
 
 
-class ConcordPolicy(BasePolicy):
+class SLOPolicy(BasePolicy):
     '''
     Service Level Objective (SLO) scheduling policy.
     This policy uses a weighted decay function to adjust the priority based on the real and expected output lengths.
@@ -228,15 +234,11 @@ class ConcordPolicy(BasePolicy):
         penalty_factor: int = 1
     ) -> None:
         super().__init__(schedule_interval, penalty_factor)
-        self.swap_in_time = 800
-        self.swap_out_time = 800
-        self.max_num_preemption_time = 20
         logger.info("SLO policy is used")
         
     def allocation_control(self, seq_group: SequenceGroup) -> float:
         total_remain_time = 0
-        unit_time = self.interval_time if self.interval_time else 0.02
-        #unit_time = seq_group.TBT_constraint
+        unit_time = self._get_interval_time()
         for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
             peer_predict_output_len = peer_seq_group.predict_output_length
             peer_decode_len = peer_seq_group.seqs[0].get_decode_len()
@@ -244,7 +246,43 @@ class ConcordPolicy(BasePolicy):
             total_remain_time += peer_remain_time
             
         return total_remain_time
-    
+
+    def _compute_remain_time(self, seq_group: SequenceGroup, remain_len: int,
+                             unit_time: float) -> float:
+        if seq_group.request_type == RequestType.COLLECTIVE:
+            return max(self.allocation_control(seq_group), 1e-6)
+        return max(unit_time * remain_len, 1e-6)
+
+    def _estimate_latency_reward(self, seq_group: SequenceGroup, input_len: int,
+                                 predict_output_len: int, remain_len: int,
+                                 remain_time: float, serve_time: float,
+                                 unit_time: float) -> float:
+        metrics = seq_group.concord_metrics
+        if metrics.TTFT is not None and metrics.service_gain > 0:
+            predict_finish = serve_time + remain_time
+            ratio = self._safe_ratio(seq_group.deadline, predict_finish)
+            decode_gain = remain_len * 8
+            return metrics.service_gain + decode_gain * ratio**self.penalty_factor
+
+        predict_finish_prefill = serve_time + unit_time
+        predict_finish_decode = serve_time + remain_time
+        prefill_ratio = self._safe_ratio(seq_group.TTFT_constraint,
+                                         predict_finish_prefill)
+        decode_ratio = self._safe_ratio(seq_group.deadline,
+                                        predict_finish_decode)
+        prefill_gain = input_len * prefill_ratio**self.penalty_factor
+        decode_gain = predict_output_len * decode_ratio**self.penalty_factor * 8
+        return prefill_gain + decode_gain
+
+    def _estimate_throughput_reward(self, seq_group: SequenceGroup,
+                                    input_len: int, predict_output_len: int,
+                                    remain_time: float,
+                                    serve_time: float) -> float:
+        predict_finish = serve_time + remain_time
+        ratio = self._safe_ratio(seq_group.deadline, predict_finish)
+        total_gain = input_len + predict_output_len * RequestPhaseWeight.DECODE.value
+        return total_gain * ratio**self.penalty_factor
+
     def reward_estimation(self, seq_group: SequenceGroup) -> Tuple[float, float]:
         cur_time = time.time()
         input_len = seq_group.seqs[0].get_prompt_len()
@@ -252,85 +290,51 @@ class ConcordPolicy(BasePolicy):
         predict_output_len = seq_group.request_info.output_len
         remain_len = predict_output_len - decode_len
 
-        # time to deadline = deadline - (cur_time - arrival_time) = deadline - serve_time
-        # finish_time = serve_time + remain_time
-        unit_time = self.interval_time if self.interval_time else 0.02
-        remain_time = unit_time * remain_len
+        unit_time = self._get_interval_time()
+        remain_time = self._compute_remain_time(seq_group, remain_len,
+                                                unit_time)
         serve_time = cur_time - seq_group.arrival_time
-        if seq_group.request_type == RequestType.COLLECTIVE:
-            remain_time = max(self.allocation_control(seq_group), 0.001)
-        else:
-            remain_time = max(remain_time, 0.001)
-
-        def _safe_ratio(numer: float, denom: float) -> float:
-            """Clamp ratio between 1e-6 and 1.0 to avoid blowups."""
-            return max(1e-6, min(1.0, numer / denom))
 
         reward = 0.0
         if seq_group.request_type == RequestType.LATENCY:
-            # 如果已经有 TTFT 和 service_gain，说明进入 decode 阶段
-            if seq_group.concord_metrics.TTFT is not None and seq_group.concord_metrics.service_gain > 0:
-                predict_finish = serve_time + remain_time
-                ratio = _safe_ratio(seq_group.deadline, predict_finish)
-                decode_gain = remain_len * 8
-                reward = seq_group.concord_metrics.service_gain + decode_gain * ratio**self.penalty_factor
-            else:
-                # prefill 阶段
-                predict_finish_prefill = serve_time + unit_time
-                predict_finish_decode = serve_time + remain_time
-                predict_finish = predict_finish_prefill
-
-                prefill_ratio = _safe_ratio(seq_group.TTFT_constraint, predict_finish_prefill)
-                decode_ratio = _safe_ratio(seq_group.deadline, predict_finish_decode)
-
-                prefill_gain = input_len * prefill_ratio**self.penalty_factor
-                decode_gain = predict_output_len * decode_ratio**self.penalty_factor * 8
-                reward = prefill_gain + decode_gain
-
-        elif seq_group.request_type in (RequestType.THROUGHPUT, RequestType.COLLECTIVE):
-            predict_finish = serve_time + remain_time
-            ratio = _safe_ratio(seq_group.deadline, predict_finish)
-            total_gain = input_len + predict_output_len * 8
-            reward = total_gain * ratio**self.penalty_factor
+            reward = self._estimate_latency_reward(seq_group, input_len,
+                                                   predict_output_len,
+                                                   remain_len, remain_time,
+                                                   serve_time, unit_time)
+        elif seq_group.request_type in (RequestType.THROUGHPUT,
+                                        RequestType.COLLECTIVE):
+            reward = self._estimate_throughput_reward(seq_group, input_len,
+                                                      predict_output_len,
+                                                      remain_time, serve_time)
 
         return reward, remain_time
 
     def get_priority(self, seq_group: SequenceGroup) -> float:
         """
-        Calculate scheduling priority using Concord policy.
-        Now uses dynamic `interval_time` instead of fixed TBT constraint.
+        Calculate scheduling priority using SLO/Jitserve policy.
+        Uses dynamic `interval_time` instead of fixed TBT constraint.
         """
-
-        # 如果之前算过就直接返回
+        # Check if priority is already computed
         if self.seq_group_slo_dict.get(seq_group.request_id) is not None:
             return self.seq_group_slo_dict[seq_group.request_id]
         
         if seq_group.request_type == RequestType.LATENCY or seq_group.request_type == RequestType.THROUGHPUT:
             reward, remain_time = self.reward_estimation(seq_group)
-            if abs(remain_time) < 1e-6:
-                density = reward / 1e-6
-            else:
-                density = reward / remain_time
-            concord_priority = (-density, remain_time)
-            self.seq_group_slo_dict[seq_group.request_id] = concord_priority
-            seq_group.slo_priority = concord_priority
+            density = reward / remain_time
+            slo_priority = (-density, remain_time)
+            self.seq_group_slo_dict[seq_group.request_id] = slo_priority
         elif seq_group.request_type == RequestType.COLLECTIVE:
-            # 计算 collective 的 priority
             total_reward = 0.0
             total_remain_time = 0.0
             for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
                 peer_reward, peer_remain_time = self.reward_estimation(peer_seq_group)
                 total_reward += peer_reward
-                total_remain_time = peer_remain_time
-            
-            if abs(total_remain_time) < 1e-6:
-                density = total_reward / 1e-6
-            else:
-                density = total_reward / total_remain_time
-            concord_priority = (-density, total_remain_time)
+                total_remain_time = max(peer_remain_time, total_remain_time)
+
+            density = total_reward / total_remain_time
+            slo_priority = (-density, total_remain_time)
 
             for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
-                self.seq_group_slo_dict[peer_seq_group.request_id] = concord_priority
-                peer_seq_group.slo_priority = concord_priority
+                self.seq_group_slo_dict[peer_seq_group.request_id] = slo_priority
 
-        return concord_priority
+        return slo_priority

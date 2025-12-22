@@ -3,8 +3,8 @@ import socket
 import numpy as np
 import pickle
 from joblib import load
-from typing import List, Tuple
-from vllm.request_info import RequestInfo
+from typing import Tuple
+from vllm.slo_tracker.request_info import RequestInfo
 
 # Load the model and tokenizer
 def load_model(model_path: str, tokenizer_path: str) -> Tuple:
@@ -64,8 +64,8 @@ def start_client(model_path: str, tokenizer_path: str):
         # Handle each request
         handle_request(connection, model, tokenizer)
 
-model_path = '/home/jovyan/workspace/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl'
-tokenizer_path = '/home/jovyan/workspace/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl'
+model_path = '/home/exouser/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl'
+tokenizer_path = '/home/exouser/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl'
 # model_path = '/home/jovyan/workspace/qrf_model/online_EXP_model_0_qrf_deepresearch_new_online_llama3-8b.pkl'
 # tokenizer_path = '/home/jovyan/workspace/qrf_vectorizer/online_EXP_vec_0_qrf_deepresearch_new_online_llama3-8b.pkl'
 

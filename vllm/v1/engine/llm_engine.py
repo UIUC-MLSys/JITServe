@@ -22,7 +22,7 @@ from vllm.transformers_utils.config import try_get_generation_config
 from vllm.transformers_utils.tokenizer_group import (
     BaseTokenizerGroup, init_tokenizer_from_configs)
 from vllm.usage.usage_lib import UsageContext
-from vllm.v1.core.scheduler import Scheduler
+from vllm.v1.core.scheduler import SLOScheduler, Scheduler
 from vllm.v1.executor.gpu_executor import GPUExecutor
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.tokenizer.detokenizer import Detokenizer, DetokenizerInputs
@@ -172,7 +172,12 @@ class LLMEngine:
         # Create the scheduler.
         # NOTE: the cache_config here have been updated with the numbers of
         # GPU and CPU blocks, which are profiled in the distributed executor.
-        self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        use_slo_scheduler = scheduler_config.policy.lower() in {
+            "jitserve", "slo"
+        }
+        scheduler_cls = SLOScheduler if use_slo_scheduler else Scheduler
+        self.scheduler = scheduler_cls(scheduler_config, cache_config,
+                                       lora_config)
 
     def _initialize_kv_caches(self) -> None:
         num_gpu_blocks, _ = self.model_executor.determine_num_available_blocks(

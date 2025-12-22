@@ -27,7 +27,7 @@ from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.outputs import EmbeddingRequestOutput, RequestOutput
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo, RequestType
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import ExecuteModelRequest
 from vllm.transformers_utils.tokenizer import AnyTokenizer
@@ -172,8 +172,8 @@ class RequestTracker:
             if finished:
                 stream.finish()
 
-        # if verbose and finished:
-            # logger.info("Finished request %s.", request_id)
+        if verbose and finished:
+            logger.info("Finished request %s.", request_id)
 
     def process_exception(self,
                           request_id: str,
@@ -204,8 +204,8 @@ class RequestTracker:
 
         self.new_requests_event.set()
 
-        # if verbose:
-            # logger.info("Added request %s.", request_id)
+        if verbose:
+            logger.info("Added request %s.", request_id)
 
         return stream
 
@@ -339,7 +339,6 @@ class _AsyncLLMEngine(LLMEngine):
 
             # Maybe switch from async mode to sync mode
             if not allow_async_output_proc and len(ctx.output_queue) > 0:
-                # logger.info("Switching to synchronous output processing. 1")
                 self._process_model_outputs(ctx=ctx)
 
             if (self.scheduler_config.is_multi_step
@@ -364,10 +363,6 @@ class _AsyncLLMEngine(LLMEngine):
             last_sampled_token_ids = \
                 self._get_last_sampled_token_ids(virtual_engine)
 
-            # logger.info(f"got length of running queue: {scheduler_outputs.running_queue_size}")
-            # logger.info(f"got length of seq_group_metadata_list: {len(seq_group_metadata_list)}")
-            # if len(seq_group_metadata_list) > 0:
-            #     logger.info(f"First seq_group_metadata_list: {seq_group_metadata_list[0].request_id}")
             execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -385,18 +380,15 @@ class _AsyncLLMEngine(LLMEngine):
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
-            # # logger.info("Before execute_model_async")
             # Execute the model.
             outputs = await self.model_executor.execute_model_async(
                 execute_model_req)
-            # logger.info(f"got length of outputs: {len(outputs)}")
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
             if self.scheduler_config.is_multi_step:
                 self._update_cached_scheduler_output(virtual_engine, outputs)
         else:
             if len(ctx.output_queue) > 0:
-                # logger.info("Switching to synchronous output processing. 2")
                 self._process_model_outputs(ctx=ctx)
             outputs = []
 
@@ -428,13 +420,11 @@ class _AsyncLLMEngine(LLMEngine):
                 assert len(
                     outputs
                 ) == 1, "Async postprocessor expects only a single output set"
-                # logger.info("Async postprocessor is processing outputs in parallel with the GPU forward pass.")
                 self._advance_to_next_step(
                     outputs[0], seq_group_metadata_list,
                     scheduler_outputs.scheduled_seq_groups)
 
             if not allow_async_output_proc:
-                # logger.info("Switching to synchronous output processing. 3")
                 self._process_model_outputs(ctx=ctx)
 
                 # Log stats.
@@ -450,11 +440,9 @@ class _AsyncLLMEngine(LLMEngine):
         if not self.has_unfinished_requests():
             # Drain async postprocessor (if exists)
             if len(ctx.output_queue) > 0:
-                # logger.info("Switching to synchronous output processing. 4")
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
 
-        # logger.info(f"Request outputs: {ctx.request_outputs}")
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -1090,7 +1078,6 @@ class AsyncLLMEngine(EngineClient):
             >>> # Process and return the final output
             >>> ...
         """
-        # logger.info("Generating for request_id in async_llm_engine: %s", request_id)
         async for output in await self.add_request(
                 request_id,
                 request_info, 

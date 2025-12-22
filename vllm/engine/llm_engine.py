@@ -20,6 +20,7 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          SpeculativeConfig)
 from vllm.core.scheduler import (ScheduledSequenceGroup, Scheduler,
                                  SchedulerOutputs)
+from vllm.core.slo_scheduler import SLOScheduler
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics_types import StatLoggerBase, Stats
 from vllm.engine.output_processor.interfaces import (
@@ -44,7 +45,7 @@ from vllm.outputs import (EmbeddingRequestOutput, RequestOutput,
                           RequestOutputFactory)
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo, RequestType
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.sequence import (EmbeddingSequenceGroupOutput, ExecuteModelRequest,
                            ParallelSampleSequenceGroup, Sequence,
@@ -425,8 +426,12 @@ class LLMEngine:
         # Create the scheduler.
         # NOTE: the cache_config here have been updated with the numbers of
         # GPU and CPU blocks, which are profiled in the distributed executor.
+        use_slo_scheduler = scheduler_config.policy.lower() in {
+            "jitserve", "slo"
+        }
+        scheduler_cls = SLOScheduler if use_slo_scheduler else Scheduler
         self.scheduler = [
-            Scheduler(
+            scheduler_cls(
                 scheduler_config, cache_config, lora_config,
                 parallel_config.pipeline_parallel_size,
                 self.async_callbacks[v_id]
@@ -1076,19 +1081,10 @@ class LLMEngine:
             # (since later we will process all of the rest)
             (outputs, seq_group_metadata_list, scheduler_outputs, is_async,
              is_last_step, is_first_step_output, skip) = ctx.output_queue[0]
-            # logger.info(f"Processing {len(seq_group_metadata_list)} outputs above")
-            # if len(seq_group_metadata_list) > 0:
-            #     logger.info(f"Seq group metadata list: {seq_group_metadata_list[0].request_id}")
-            # logger.info(f"Outputs: {len(outputs)}")
         else:
             (outputs, seq_group_metadata_list, scheduler_outputs, is_async,
              is_last_step, is_first_step_output,
              skip) = ctx.output_queue.popleft()
-            # logger.info(f"Processing {len(seq_group_metadata_list)} outputs below")
-            # if len(seq_group_metadata_list) > 0:
-            #     logger.info(f"Seq group metadata list: {seq_group_metadata_list[0].request_id}")
-            #     logger.info(f"Outputs: {len(outputs[0].outputs)}")
-            #     logger.info(f"Skip: {skip}")
 
         # Sanity check
         assert len(seq_group_metadata_list) == len(
@@ -1195,7 +1191,6 @@ class LLMEngine:
 
             seq_group = scheduled_seq_group.seq_group
             seq_group.maybe_set_first_token_time(now)
-            # logger.info(f"Creating request output for {seq_group.request_id}")
             request_output = RequestOutputFactory.create(
                 seq_group,
                 self.seq_id_to_seq_group,
@@ -1228,13 +1223,11 @@ class LLMEngine:
                 self.process_request_outputs_callback(ctx.request_outputs)
                 ctx.request_outputs.clear()
             return
-        # logger.info(f"Indices: {indices}")
         # Create the outputs
         for i in indices:
             if i in skip or i in finished_before or i in finished_now:
                 continue  # Avoids double processing
             
-            # logger.info(f"Creating request output for {seq_group.request_id}")
             scheduled_seq_group = scheduler_outputs.scheduled_seq_groups[i]
 
             seq_group = scheduled_seq_group.seq_group

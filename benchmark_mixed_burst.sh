@@ -1,20 +1,20 @@
 #!/bin/bash
 
 # 定义测试参数
-policies=("jitserve" "sjf" "fcfs" "vllm" "srtf" "autellix")
+policies=("concord" "sjf" "fcfs" "vllm" "srtf" "las")
 rates=(6.0)
 batch_sizes=(32)
 penalty_factors=(100)
 search_strategy="sliding_window"
 top_k_selection=3
 #output_dir="batch_profile_results_debug"
-output_dir="batch_result/test"
-#model="Qwen/Qwen2.5-14B-Instruct"
-model="meta-llama/Llama-3.1-8B-Instruct"
+output_dir="batch_burst_result_1.5"
+model="Qwen/Qwen2.5-14B-Instruct"
+#model="meta-llama/Llama-3.1-8B-Instruct"
 
 # 输入参数
 request_ratios="1,1,1"
-num_prompts="200"
+num_prompts="3000"
 use_all_node="false"
 
 # 创建输出目录
@@ -119,7 +119,7 @@ for rate in "${rates[@]}"; do
                         --model "$model" &
                 elif [ "$policy" = "concord-precise" ]; then
                     python3 -m vllm.entrypoints.api_server \
-                        --scheduling-policy "jitserve" \
+                        --scheduling-policy "concord" \
                         --disable-prediction \
                         --enable-chunked-prefill True \
                         --penalty-factor "$penalty_factor" \
@@ -155,10 +155,11 @@ for rate in "${rates[@]}"; do
                     python3 benchmarks/benchmark_scheduler.py \
                         --model "$model" \
                         --policy "$policy" \
+                        --burst True \
                         --arrival-rate "$rate_scheduler" \
                         --penalty-factor "$penalty_factor" \
                         --batch-size "$batch_size" \
-                        --slo-constraint "0.8,0.08,8" \
+                        --slo-constraint "1.5,0.15,15" \
                         --num-prompts "$num_lmsys" \
                         --trace-path "$trace_file" > "$scheduler_output_file" 2>&1 &
                 else
@@ -172,10 +173,11 @@ for rate in "${rates[@]}"; do
                     python3 benchmarks/benchmark_scheduler.py \
                         --model "$model" \
                         --policy "$policy" \
+                        --burst True \
                         --arrival-rate "$rate" \
                         --penalty-factor "$penalty_factor" \
                         --batch-size "$batch_size" \
-                        --slo-constraint "0.8,0.08,8" \
+                        --slo-constraint "1.5,0.15,15" \
                         $prompts_arg > "$scheduler_output_file" 2>&1 &
                 fi
                 scheduler_pid=$!
@@ -186,9 +188,10 @@ for rate in "${rates[@]}"; do
                     python3 benchmarks/benchmark_scheduler_deepresearch.py \
                         --model "$model" \
                         --policy "$policy" \
+                        --burst True \
                         --arrival-rate "$rate_deepresearch" \
                         --penalty-factor "$penalty_factor" \
-                        --slo-constraint "0.8,0.08,8" \
+                        --slo-constraint "1.5,0.15,15" \
                         --num-prompts "$num_deep_research" \
                         --trace-path "benchmarks/dataset/trace/deepresearch_llama3_maxout1024_filtered8192_test.jsonl" > "$deepresearch_output_file" 2>&1 &
                     deepresearch_pid=$!

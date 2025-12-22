@@ -410,3 +410,7 @@ class SchedulerOutput:
 
     preempted_req_ids: Set[str]
     finished_req_ids: Set[str]
+
+
+class SLOScheduler(Scheduler):
+    pass
