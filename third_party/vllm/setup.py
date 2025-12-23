@@ -358,9 +358,12 @@ def get_path(*filepath) -> str:
 
 
 def get_vllm_version() -> str:
-    version = get_version(
-        write_to="vllm/_version.py",  # TODO: move this to pyproject.toml
-    )
+    try:
+        version = get_version(
+            write_to="vllm/_version.py",  # TODO: move this to pyproject.toml
+        )
+    except Exception:
+        version = "0.1.dev81+ga678bf3"
 
     sep = "+" if "+" not in version else "."  # dev versions might contain +
 

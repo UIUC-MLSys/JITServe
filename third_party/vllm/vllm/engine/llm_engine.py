@@ -44,7 +44,7 @@ from vllm.outputs import (EmbeddingRequestOutput, RequestOutput,
                           RequestOutputFactory)
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.slo_tracker.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.sequence import (EmbeddingSequenceGroupOutput, ExecuteModelRequest,
                            ParallelSampleSequenceGroup, Sequence,

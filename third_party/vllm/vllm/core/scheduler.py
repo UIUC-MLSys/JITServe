@@ -19,7 +19,7 @@ from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
 from vllm.utils import Device, PyObjectCache
 
 from jitserve.scheduler.policy import BasePolicy
-from jitserve.slo_tracker.slo_tracker import SLOTracker
+from vllm.slo_tracker.slo_tracker import SLOTracker
 
 logger = init_logger(__name__)
 

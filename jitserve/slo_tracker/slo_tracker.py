@@ -1,8 +1,11 @@
 import time
 
-from typing import Iterable, Optional
-from jitserve.request_info import RequestType, RequestPhaseWeight
-from vllm.sequence import SequenceGroup
+from typing import Iterable, Optional, TYPE_CHECKING
+
+from jitserve.request_info import RequestPhaseWeight, RequestType
+
+if TYPE_CHECKING:
+    from vllm.sequence import SequenceGroup
 
 
 class SLOTracker:
@@ -10,12 +13,12 @@ class SLOTracker:
         self.penalty_factor = penalty_factor
         self.interval_time = interval_time
 
-    def update_seq_group_metrics(self, seq_groups: Iterable[SequenceGroup]) -> None:
+    def update_seq_group_metrics(self, seq_groups: Iterable["SequenceGroup"]) -> None:
         cur_time = time.time()
         for seq_group in seq_groups:
             self._update_metrics(seq_group, cur_time)
 
-    def _update_metrics(self, seq_group: SequenceGroup, cur_time: float) -> None:
+    def _update_metrics(self, seq_group: "SequenceGroup", cur_time: float) -> None:
         metrics = seq_group.concord_metrics
         input_len = seq_group.first_seq.get_prompt_len()
         output_len = seq_group.first_seq.get_output_len()
@@ -38,7 +41,7 @@ class SLOTracker:
         metrics.prompt_len = input_len
         metrics.output_len = output_len
 
-    def _maybe_set_ttft(self, seq_group: SequenceGroup, metrics,
+    def _maybe_set_ttft(self, seq_group: "SequenceGroup", metrics,
                         cur_time: float) -> None:
         if seq_group.first_seq.get_output_len() < 1 or metrics.TTFT is not None:
             return
@@ -50,7 +53,7 @@ class SLOTracker:
         delta_time = cur_time - metrics.last_schedule_time
         metrics.TBT.append(delta_time / delta_output)
 
-    def _compute_service_gain(self, seq_group: SequenceGroup, cur_time: float,
+    def _compute_service_gain(self, seq_group: "SequenceGroup", cur_time: float,
                               input_len: int, output_len: int,
                               delta_input: int,
                               delta_output: int) -> float:
@@ -65,7 +68,7 @@ class SLOTracker:
                                                  output_len)
         return 0.0
 
-    def _latency_service_gain(self, seq_group: SequenceGroup, cur_time: float,
+    def _latency_service_gain(self, seq_group: "SequenceGroup", cur_time: float,
                               input_len: int, output_len: int,
                               delta_input: int,
                               delta_output: int) -> float:
@@ -87,7 +90,7 @@ class SLOTracker:
 
         return service
 
-    def _throughput_service_gain(self, seq_group: SequenceGroup,
+    def _throughput_service_gain(self, seq_group: "SequenceGroup",
                                  delta_input: int, delta_output: int,
                                  input_len: int, output_len: int) -> float:
         metrics = seq_group.concord_metrics
@@ -104,7 +107,7 @@ class SLOTracker:
                 (seq_group.deadline / metrics.TTLT)**self.penalty_factor)
         return input_len * deadline_penalty + output_len * deadline_penalty * RequestPhaseWeight.DECODE.value
 
-    def _desired_decode_len(self, seq_group: SequenceGroup,
+    def _desired_decode_len(self, seq_group: "SequenceGroup",
                             cur_time: float) -> float:
         metrics = seq_group.concord_metrics
         if metrics.TTFT is None:

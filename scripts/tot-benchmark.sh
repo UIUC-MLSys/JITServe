@@ -46,14 +46,14 @@ for test_case in "${test_cases[@]}"; do
         # 启动服务器
         echo "启动服务器..."
         if [ "$policy" = "fcfs" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "fcfs" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
                 --max-num-seqs "$batch_size" \
                 --model "$model" &
         elif [ "$policy" = "concord-default-structure" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -62,7 +62,7 @@ for test_case in "${test_cases[@]}"; do
                 --graph-matching-mode "none" \
                 --model "$model" &
         elif [ "$policy" = "concord-total-deadline-no-graph" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -72,7 +72,7 @@ for test_case in "${test_cases[@]}"; do
                 --use-total-deadline \
                 --model "$model" &
         elif [ "$policy" = "concord-static-default-structure" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -81,7 +81,7 @@ for test_case in "${test_cases[@]}"; do
                 --graph-matching-mode "static" \
                 --model "$model" &
         elif [ "$policy" = "concord-static-total-deadline" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -91,7 +91,7 @@ for test_case in "${test_cases[@]}"; do
                 --use-total-deadline \
                 --model "$model" &
         elif [ "$policy" = "concord-online-graph" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -100,7 +100,7 @@ for test_case in "${test_cases[@]}"; do
                 --graph-matching-mode "online" \
                 --model "$model" &
         elif [ "$policy" = "concord-precise" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --disable-prediction \
                 --enable-chunked-prefill False \
@@ -110,7 +110,7 @@ for test_case in "${test_cases[@]}"; do
                 --graph-matching-mode "precise" \
                 --model "$model" &
         else
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "$policy" \
                 --enable-chunked-prefill True \
                 --penalty-factor "$penalty_factor" \

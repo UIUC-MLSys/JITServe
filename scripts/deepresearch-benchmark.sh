@@ -85,14 +85,14 @@ for test_case in "${test_cases[@]}"; do
         server_log_file="logs/server_rate${arrival_rate}_${policy}_${node_type}_${stage_ratio_method}.log"
         
         if [ "$policy" = "fcfs" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "fcfs" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
                 --max-num-seqs "$bs" \
                 --model "$model" > "$server_log_file" 2>&1 &
         elif [ "$policy" = "concord-default-structure" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -102,7 +102,7 @@ for test_case in "${test_cases[@]}"; do
                 $extra_args \
                 --model "$model" > "$server_log_file" 2>&1 &
         elif [ "$policy" = "concord-total-deadline-no-graph" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --disable-prediction \
                 --enable-chunked-prefill False \
@@ -114,7 +114,7 @@ for test_case in "${test_cases[@]}"; do
                 $extra_args \
                 --model "$model" > "$server_log_file" 2>&1 &
         elif [ "$policy" = "concord-static-default-structure" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --enable-chunked-prefill False \
                 --penalty-factor "$penalty_factor" \
@@ -124,7 +124,7 @@ for test_case in "${test_cases[@]}"; do
                 $extra_args \
                 --model "$model" > "$server_log_file" 2>&1 &
         elif [ "$policy" = "concord-static-total-deadline" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --disable-prediction \
                 --enable-chunked-prefill False \
@@ -136,7 +136,7 @@ for test_case in "${test_cases[@]}"; do
                 $extra_args \
                 --model "$model" > "$server_log_file" 2>&1 &
         elif [ "$policy" = "concord-online-graph" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --disable-prediction \
                 --enable-chunked-prefill False \
@@ -147,7 +147,7 @@ for test_case in "${test_cases[@]}"; do
                 $extra_args \
                 --model "$model" > "$server_log_file" 2>&1 &
         elif [ "$policy" = "concord-precise" ]; then
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "concord" \
                 --disable-prediction \
                 --enable-chunked-prefill False \
@@ -158,7 +158,7 @@ for test_case in "${test_cases[@]}"; do
                 $extra_args \
                 --model "$model" > "$server_log_file" 2>&1 &
         else
-            python3 -m vllm.entrypoints.api_server \
+            python3 -m jitserve.server \
                 --scheduling-policy "$policy" \
                 --enable-chunked-prefill True \
                 --penalty-factor "$penalty_factor" \

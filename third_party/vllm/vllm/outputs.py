@@ -9,8 +9,6 @@ from vllm.sampling_params import RequestOutputKind
 from vllm.sequence import (PromptLogprobs, RequestMetrics, SampleLogprobs,
                            SequenceGroup, SequenceGroupBase, SequenceStatus)
 
-from jitserve.request_info import RequestType
-
 @dataclass
 class CompletionOutput:
     """The output data of one completion output of a request.

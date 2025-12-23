@@ -27,7 +27,7 @@ from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.outputs import EmbeddingRequestOutput, RequestOutput
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.slo_tracker.request_info import RequestInfo, RequestType
+from vllm.slo_tracker.request_info import RequestInfo
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import ExecuteModelRequest
 from vllm.transformers_utils.tokenizer import AnyTokenizer

@@ -98,7 +98,7 @@ for rate in "${rates[@]}"; do
                 # 启动服务器
                 echo "启动服务器..."
                 if [ "$policy" = "vllm" ]; then
-                    python3 -m vllm.entrypoints.api_server \
+                    python3 -m jitserve.server \
                         --scheduling-policy "fcfs" \
                         --enable-chunked-prefill False \
                         --penalty-factor "$penalty_factor" \
@@ -108,7 +108,7 @@ for rate in "${rates[@]}"; do
                         $extra_args \
                         --model "$model" &
                 elif [ "$policy" = "vtc" ]; then
-                    python3 -m vllm.entrypoints.api_server \
+                    python3 -m jitserve.server \
                         --scheduling-policy "vtc" \
                         --enable-chunked-prefill False \
                         --penalty-factor "$penalty_factor" \
@@ -118,7 +118,7 @@ for rate in "${rates[@]}"; do
                         $extra_args \
                         --model "$model" &
                 elif [ "$policy" = "concord-precise" ]; then
-                    python3 -m vllm.entrypoints.api_server \
+                    python3 -m jitserve.server \
                         --scheduling-policy "concord" \
                         --disable-prediction \
                         --enable-chunked-prefill True \
@@ -129,7 +129,7 @@ for rate in "${rates[@]}"; do
                         $extra_args \
                         --model "$model" &
                 else
-                    python3 -m vllm.entrypoints.api_server \
+                    python3 -m jitserve.server \
                         --scheduling-policy "$policy" \
                         --enable-chunked-prefill True \
                         --penalty-factor "$penalty_factor" \

@@ -23,7 +23,8 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 from vllm.logger import init_logger
 
-from jitserve import RequestType, RequestInfo, RequestSLOMetrics
+from vllm.slo_tracker.request_info import (RequestInfo, RequestSLOMetrics,
+                                           RequestType)
 
 logger = init_logger(__name__)
 

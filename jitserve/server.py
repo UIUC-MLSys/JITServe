@@ -22,8 +22,10 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.launcher import serve_http
 from vllm.logger import init_logger
-from vllm.request_analyzer import (load_model, read_deepresearch_traces, GraphMatchContext,
-                                   Default_DeepResearch_Stage)
+from jitserve.request_analyzer.prediction import load_model
+from jitserve.request_analyzer.deepresearch_trace_reader import read_deepresearch_traces
+from jitserve.request_analyzer.graph_context import GraphMatchContext
+from jitserve.request_analyzer.similarity import Default_DeepResearch_Stage
 from vllm.sampling_params import SamplingParams
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import (FlexibleArgumentParser, iterate_with_cancellation,
