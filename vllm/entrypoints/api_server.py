@@ -291,7 +291,7 @@ async def init_app(
     engine_args.max_model_len = 8192
 
     if not args.disable_prediction:
-        if engine_args.scheduling_policy in ['sjf', 'jitserve', 'slo']:
+        if engine_args.scheduling_policy in ['ltr', 'jitserve', 'slo']:
             use_prediction = True
             logger.info(f"Prediction model is enabled")
             

@@ -364,7 +364,7 @@ __device__ void paged_attention_kernel(
   using Float_L_vec = typename FloatVec<L_vec>::Type;
 
   constexpr int NUM_V_VECS_PER_ROW = BLOCK_SIZE / V_VEC_SIZE;
-  constexpr int NUM_ROWS_PER_ITER = WARP_SIZE / NUM_V_VECS_PER_ROW;
+  constexpr int NUM_ROWS_PER_ITER = MAX(1, WARP_SIZE / NUM_V_VECS_PER_ROW);
   constexpr int NUM_ROWS_PER_THREAD =
       DIVIDE_ROUND_UP(HEAD_SIZE, NUM_ROWS_PER_ITER);
 

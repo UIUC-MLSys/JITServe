@@ -106,7 +106,7 @@ class BasePolicy(ABC):
     @classmethod
     def _get_policy_cls(cls, policy_name: str) -> 'BasePolicy':
         policy_map = {
-            "sjf": SJFPolicy,
+            "ltr": SJFPolicy,
             "srtf": SRTFPolicy,
             "concord": SLOPolicy,
             "jitserve": SLOPolicy,

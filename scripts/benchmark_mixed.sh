@@ -1,5 +1,5 @@
 #!/bin/bash
-policies=("jitserve" "sjf" "fcfs" "vllm" "srtf" "autellix")
+policies=("jitserve" "ltr" "fcfs" "vllm" "srtf" "autellix")
 rates=(6.0)
 batch_sizes=(32)
 penalty_factors=(100)
@@ -121,7 +121,6 @@ run_deepresearch_benchmark() {
         --policy "$policy_name" \
         --arrival-rate "$rate_deepresearch" \
         --penalty-factor "$penalty_factor" \
-        --batch-size "$batch_size" \
         --slo-constraint "0.8,0.08,8" \
         --num-prompts "$num_deep_research" \
         --trace-path "$deepresearch_trace_file" > "$output_file" 2>&1 &

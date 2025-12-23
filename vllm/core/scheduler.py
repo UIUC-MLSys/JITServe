@@ -1292,7 +1292,7 @@ class Scheduler:
         scheduler_start_time = time.perf_counter()
 
         scheduler_outputs: SchedulerOutputs = self._schedule()
-        self.slo_tracker.update_seq_group_metrics(list(self.running), time.time())
+        self.slo_tracker.update_seq_group_metrics(list(self.running))
         now = time.time()
 
         if not self.cache_config.enable_prefix_caching:

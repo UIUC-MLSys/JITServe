@@ -855,6 +855,25 @@ class SequenceGroup:
         """Sets the finished time for Request level timings."""
         self.metrics.finished_time = time
 
+    def service_compute(self, cur_time: float, penalty_factor: int) -> float:
+        from vllm.slo_tracker.slo_tracker import SLOTracker
+
+        metrics = self.concord_metrics
+        input_len = self.first_seq.get_prompt_len()
+        output_len = self.first_seq.get_output_len()
+        delta_input = input_len if self.request_type == RequestType.LATENCY else 0
+        delta_output = output_len
+        prev_gain = metrics.service_gain
+        try:
+            metrics.service_gain = 0
+            tracker = SLOTracker(penalty_factor)
+            tracker._maybe_set_ttft(self, metrics, cur_time)
+            return tracker._compute_service_gain(self, cur_time, input_len,
+                                                 output_len, delta_input,
+                                                 delta_output)
+        finally:
+            metrics.service_gain = prev_gain
+
     def get_max_num_running_seqs(self) -> int:
         """The maximum number of sequences running in parallel in the remaining
         lifetime of the request."""

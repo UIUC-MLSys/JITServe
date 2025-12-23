@@ -26,7 +26,7 @@ class SLOTracker:
         delta_output = output_len - metrics.output_len
         metrics.new_prefill_tokens = delta_input
         metrics.new_decode_tokens = delta_output
-        metrics.service_gain += self._compute_service_gain(
+        metrics.service_gain = self._compute_service_gain(
             seq_group, cur_time, input_len, output_len, delta_input,
             delta_output)
 
