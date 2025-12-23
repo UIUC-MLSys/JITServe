@@ -9,8 +9,8 @@ output_dir="batch_result/test"
 model="meta-llama/Llama-3.1-8B-Instruct"
 
 # trace config paths
-default_trace_file="benchmarks/dataset/trace/lmsys.json"
-deepresearch_trace_file="benchmarks/dataset/trace/deepresearch_llama3_maxout1024_filtered8192_test.jsonl"
+default_trace_file="../benchmarks/dataset/trace/lmsys.json"
+deepresearch_trace_file="../benchmarks/dataset/trace/deepresearch_llama3_maxout1024_filtered8192_test.jsonl"
 request_ratios="1,1,1"
 num_prompts="200"
 use_all_node="false"
@@ -37,7 +37,7 @@ rate_scheduler=0
 if [[ -n "$request_ratios" && -n "$num_prompts" ]]; then
     echo "Using custom request ratios. Generating trace file..."
     
-    create_output=$(python3 benchmarks/create_trace.py --request_ratio "$request_ratios" --num_prompts "$num_prompts" 2>&1)
+    create_output=$(python3 ../benchmarks/create_trace.py --request_ratio "$request_ratios" --num_prompts "$num_prompts" 2>&1)
     echo "$create_output"
 
     trace_file=$(echo "$create_output" | grep "Trace file:" | sed 's/Trace file: //')
@@ -101,7 +101,7 @@ run_tot_benchmark() {
         prompts_arg=("--num-prompts" "200")
     fi
 
-    python3 benchmarks/benchmark_scheduler.py \
+    python3 ../benchmarks/benchmark_scheduler.py \
         --model "$model" \
         --policy "$policy_name" \
         --arrival-rate "$arrival_rate" \
@@ -116,7 +116,7 @@ run_deepresearch_benchmark() {
     local policy_name="$1"
     local output_file="$2"
 
-    python3 benchmarks/benchmark_scheduler_deepresearch.py \
+    python3 ../benchmarks/benchmark_scheduler_deepresearch.py \
         --model "$model" \
         --policy "$policy_name" \
         --arrival-rate "$rate_deepresearch" \
@@ -178,7 +178,7 @@ for rate in "${rates[@]}"; do
                     run_deepresearch_benchmark "$policy" "$deepresearch_output_file"
                     deepresearch_pid=$!
                     
-                    echo "Waiting for both benchmarks to complete..."
+                    echo "Waiting for both ../benchmarks to complete..."
                     wait $scheduler_pid
                     wait $deepresearch_pid
                 else
