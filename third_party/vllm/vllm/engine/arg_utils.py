@@ -859,7 +859,7 @@ class EngineArgs:
         parser.add_argument(
             '--penalty-factor',
             type=int,
-            default=1,
+            default=100,
             help="The penalty factor to be applied to the service gain and "
             "slo/jitserve priority"
         )
@@ -867,7 +867,7 @@ class EngineArgs:
         parser.add_argument(
             '--top-k-selection',
             type=int,
-            default=1,
+            default=3,
             help="The top-k*batch size selection to be applied to the service gain "
             "and slo/jitserve priority"
         )

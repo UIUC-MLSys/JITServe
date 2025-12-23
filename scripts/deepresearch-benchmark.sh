@@ -25,8 +25,8 @@ policies=(
 output_dir="benchmark_results"
 model="meta-llama/Llama-3.1-8B-Instruct"
 # model="meta-llama/Llama-3.2-1B-Instruct"
-# trace_path="benchmarks/dataset/deepresearch_trace_filtered_8192.jsonl"
-trace_path="benchmarks/dataset/test_deepresearch_llama3_maxout1024_filtered8192.jsonl"
+# trace_path="benchmark/trace/dataset/trace/deepresearch_trace_filtered_8192.jsonl"
+trace_path="benchmark/trace/dataset/trace/test_deepresearch_llama3_maxout1024_filtered8192.jsonl"
 
 # 创建输出目录和日志目录
 mkdir -p "$output_dir"
@@ -176,7 +176,7 @@ for test_case in "${test_cases[@]}"; do
         echo "启动客户端..."
         
         
-        python3 benchmarks/benchmark_scheduler_deepresearch.py \
+        python3 benchmark/schedulers/benchmark_scheduler_deepresearch.py \
             --model "$model" \
             --policy "$policy" \
             --arrival-rate "$arrival_rate" \

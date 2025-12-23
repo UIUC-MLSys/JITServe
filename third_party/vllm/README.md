@@ -1,10 +1,37 @@
-vllm-0.1.dev81+ga678bf3.d20251223
+32176fe
+# vLLM (Vendored Dependency)
 
-modified filesin vllm:
-outputs.py
-sequence.py
-core/scheduler.py
-engine/arg_utils.py
-engine/llm_engine.py
-engine/async_llm_engine.py
-entrypoints/api_server.py
+This directory contains a **vendored snapshot of vLLM** used by
+JITServe for artifact evaluation.
+
+
+## Versioning
+
+This artifact vendors vLLM at commit: [32176fe (2024-10-27)](https://github.com/vllm-project/vllm/commit/32176fe). The snapshot is included verbatim, except for
+**minimal integration hooks** required by JITServe.
+
+## Modifications
+
+Changes relative to upstream vLLM are limited to:
+- Import hooks allowing JITServe to register its scheduler
+- Lightweight scheduler interface extensions
+
+All JITServe-specific scheduling logic resides in the top-level
+`jitserve/` directory and **not** in vLLM.
+
+## Installation
+
+Install vLLM from this directory:
+
+```bash
+pip install -e .
+```
+
+## Update vLLM (subtree)
+
+To pull upstream updates:
+```bash
+git subtree pull --prefix=third_party/vllm upstream main --squash
+```
+
+If upstream uses a different branch, replace `main` with the branch name.

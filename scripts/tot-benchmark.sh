@@ -1,7 +1,4 @@
 #!/bin/bash
-
-export HF_TOKEN=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
-
 # 定义测试参数组合
 test_cases=(
     # batch_size arrival_rate penalty_factor slo_constraint num_prompts
@@ -126,11 +123,11 @@ for test_case in "${test_cases[@]}"; do
         # 运行性能测试
         echo "启动客户端..."
         output_file="${output_dir}/tot_exp_burst_bs${batch_size}_rate${arrival_rate}_${policy}.log"
-        python3 benchmarks/benchmark_scheduler.py \
+        python3 benchmark/schedulers/benchmark_scheduler.py \
             --model "$model" \
             --policy "$policy" \
             --arrival-rate "$arrival_rate" \
-            --trace-path "benchmarks/dataset/trace/lmsys_tot.json" \
+            --trace-path "benchmark/trace/dataset/trace/lmsys_tot.json" \
             --penalty-factor "$penalty_factor" \
             --batch-size "$batch_size" \
             --slo-constraint "$slo_constraint" \

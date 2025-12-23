@@ -187,7 +187,6 @@ async def generate(request: Request) -> Response:
     client_id = request_dict.get("client_id", 0)
 
     logger.debug(f"stream: {stream}")
-    logger.info("In third_party/vllm/vllm/entrypoints/api_server.py")
 
     sampling_params = _build_sampling_params(request_dict)
     request_info, prompt = _build_request_info(request_dict, client_id)
@@ -441,14 +440,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prediction-model-path",
         type=str,
-        # default='/home/jovyan/workspace/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
-        default='/home/exouser/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
+        default='assets/qrf/qrf_model/0_qrf_lmsys_chat_llama3_8b.pkl',
         help="Path to the prediction model")
     parser.add_argument(
         "--prediction-tokenizer-path",
         type=str,
-        # default='/home/jovyan/workspace/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
-        default='/home/exouser/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
+        default='assets/qrf/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
         help="Path to the prediction tokenizer")
     parser.add_argument(
         "--graph-structure-type",

@@ -11,9 +11,6 @@ from typing import (Any, Awaitable, Callable, Dict, Generic, Iterable, List,
 # yapf conflicts with isort for this block
 # yapf: disable
 
-import sys
-sys.path.insert(0, '/home/exouser/.local/lib/python3.10/site-packages')
-
 from openai.types.chat import (ChatCompletionAssistantMessageParam,
                                ChatCompletionContentPartImageParam)
 from openai.types.chat import (

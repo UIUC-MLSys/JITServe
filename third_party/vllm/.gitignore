@@ -196,34 +196,4 @@ _build/
 *.hip
 *_hip*
 hip_compat.h
-
-# Benchmark dataset
-benchmarks/examples/
-benchmarks/dataset/
-benchmarks/result/
-benchmarks/result-old/
-benchmarks/dataset
-benchmarks/*.json
-benchmarks/*.csv
-
-# Benchmark results
-result/
-benchmarks_results.*/
-t-*.txt
-*.pdf
-*.tar
-./vllm_profile
-
-# Simulation results
-simulate.sh
-simulator.py
-simulation_*_*.txt
-
-# Test results
-test-connection/
-benchmarks/utils/*.png
-fig/
-batch_result/
-
-# Linting
 actionlint
