@@ -6,6 +6,15 @@ LLM serving system designed to support heterogeneous workloads.
 The artifact is organized to support **reproducible evaluation** of the
 scheduling and preemption mechanisms described in the paper.
 
+## Structure Overview
+
+- `jitserve/`: SLO tracking, scheduling, and server entrypoint.
+- `third_party/vllm/`: vendored vLLM snapshot with minimal integration hooks.
+- `scripts/`: benchmark scripts and experiment runners.
+- `benchmark/`: trace generate tools, and benchmark clients.
+- `traces/`: datasets and traces.
+- `assets/`: qrf models and vectorizer.
+
 
 ## Getting Started
 
@@ -18,7 +27,6 @@ If you have an existing vLLM installation, please remove it first:
 ```bash
 pip uninstall vllm -y
 ```
----
 
 ### Download Required Assets (QRF Predictors)
 
@@ -27,7 +35,6 @@ artifacts following the instructions in:
 ```
 assets/README.md
 ```
----
 
 ### vLLM Dependency (Vendored)
 
@@ -47,8 +54,6 @@ third_party/vllm/README.md
 ⚠️ Do NOT install vLLM via pip install vllm, as upstream versions are
 incompatible with JITServe’s scheduler integration.
 
----
-
 ### Install JITServe
 
 From the repository root, install JITServe as an editable package:
@@ -58,15 +63,6 @@ pip install -e .
 
 This installs JITServe into the Python environment and exposes it as a
 package.
-
-## Structure Overview
-
-- `jitserve/`: SLO tracking, scheduling, and server entrypoint.
-- `third_party/vllm/`: vendored vLLM snapshot with minimal integration hooks.
-- `scripts/`: benchmark scripts and experiment runners.
-- `benchmark/`: trace generate tools, and benchmark clients.
-- `traces/`: datasets and traces.
-- `assets/`: qrf models and vectorizer.
 
 ## Run Experiments
 
@@ -101,3 +97,8 @@ If you use these artifacts, please consider to cite our paper:
 
 ## Contact
 Wei Zhang [(zhangw2@illinois.edu)](zhangw2@illinois.edu) and Zhiyu Wu [(zhiyuwu2@illinois.edu)](zhiyuwu2@illinois.edu)
+
+## License
+
+This project is released under the Apache License 2.0.
+See the [LICENSE](LICENSE) file for details.
