@@ -9,23 +9,55 @@ scheduling and preemption mechanisms described in the paper.
 
 ## Getting Started
 
-Prereqs:
+### Prerequisites
 - Python 3.10+
 - CUDA 12+
 - No preinstalled vLLM (to avoid import conflicts)
 
+If you have an existing vLLM installation, please remove it first:
 ```bash
 pip uninstall vllm -y
 ```
+---
 
-Install from the repo root:
+### Download Required Assets (QRF Predictors)
+
+Before installation, please download the required models and prediction
+artifacts following the instructions in:
+```
+assets/README.md
+```
+---
+
+### vLLM Dependency (Vendored)
+
+JITServe relies on a vendored and locally modified snapshot of vLLM
+located at:
+```
+third_party/vllm/
+```
+
+This vLLM copy is NOT installed automatically
+
+Please follow the instructions in:
+```
+third_party/vllm/README.md
+```
+
+⚠️ Do NOT install vLLM via pip install vllm, as upstream versions are
+incompatible with JITServe’s scheduler integration.
+
+---
+
+### Install JITServe
+
+From the repository root, install JITServe as an editable package:
 ```bash
 pip install -e .
 ```
-This installs JITServe as an editable Python package.
 
-The vendored vLLM dependency should be installed separately following
-the instructions in third_party/vllm/.
+This installs JITServe into the Python environment and exposes it as a
+package.
 
 ## Structure Overview
 

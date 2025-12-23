@@ -1,9 +1,11 @@
-32176fe
 # vLLM (Vendored Dependency)
 
 This directory contains a **vendored snapshot of vLLM** used by
 JITServe for artifact evaluation.
 
+⚠️ **Important**
+- Please **DO NOT** run `pip install vllm` or upgrade vLLM via pip.
+- The code under `third_party/vllm/` is used **only through JITServe**.
 
 ## Versioning
 
@@ -27,7 +29,8 @@ Install vLLM from this directory:
 pip install -e .
 ```
 
-## Update vLLM (subtree)
+## Pulling Upstream vLLM Updates (For Developers Only)
+We intend to synchronize with upstream vLLM in the future.
 
 To pull upstream updates:
 ```bash
