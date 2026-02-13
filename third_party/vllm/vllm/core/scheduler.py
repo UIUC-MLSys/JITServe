@@ -359,7 +359,9 @@ class Scheduler:
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
-        self.policy: BasePolicy = BasePolicy._get_policy_cls(scheduler_config.policy)(penalty_factor=scheduler_config.penalty_factor)
+        self.policy = None
+        if scheduler_config.policy != "slosserve":
+            self.policy: BasePolicy = BasePolicy._get_policy_cls(scheduler_config.policy)(penalty_factor=scheduler_config.penalty_factor)
         self.waiting = deque()
         # Sequence groups in the RUNNING state.
         # Contain decode requests.
@@ -1184,8 +1186,11 @@ class Scheduler:
                 running_scheduled.swapped_out) == 0:
             swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=True)
 
-        # Schedule new prefills.
-        self.waiting = deque(sorted(self.waiting, key=self.policy.get_priority))
+        # Schedule new prefills
+        if self.policy is not None:
+            self.waiting = deque(sorted(self.waiting, key=self.policy.get_priority))
+        else:
+            self.waiting = deque(self.waiting)
         prefills = self._schedule_prefills(budget,
                                            curr_loras,
                                            enable_chunking=True)

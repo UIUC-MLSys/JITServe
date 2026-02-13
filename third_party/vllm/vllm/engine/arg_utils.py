@@ -847,7 +847,7 @@ class EngineArgs:
         parser.add_argument(
             '--scheduling-policy',
             choices=[
-                'fcfs', 'priority', 'autellix', 'jitserve', 'ltr', 'srtf'
+                'fcfs', 'priority', 'autellix', 'jitserve', 'ltr', 'srtf', 'slosserve'
             ],
             default="fcfs",
             help='The scheduling policy to use. "fcfs" (first come first served'

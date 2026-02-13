@@ -4,7 +4,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import List, Tuple, Deque, Optional, Callable, TYPE_CHECKING
+from typing import List, Tuple, Deque, Optional, Callable, Set, TYPE_CHECKING
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus
@@ -120,7 +120,13 @@ class SLOScheduler(Scheduler):
 
         self.prev_no_swap_space = False
 
+        self.sloserve: Optional[Callable] = None
+        if scheduler_config.policy == "slosserve":
+            self.sloserve = None # placeholder
+
     def _schedule(self) -> "SchedulerOutputs":
+        if self.sloserve is not None:
+            result = self._schedule_baseline()
         if self.policy.update_schedule_count() and self._test_enough_swap_space():
             result = self._schedule_slo()
         else:
@@ -169,6 +175,182 @@ class SLOScheduler(Scheduler):
                 self.swapped = deque()
 
         return abort_seqs
+    
+    def _schedule_baseline(self):
+        budget = SchedulingBudget(
+            token_budget=self.scheduler_config.max_num_batched_tokens,
+            max_num_seqs=self.scheduler_config.max_num_seqs,
+        )
+        curr_loras: Set[int] = set()
+        self.free_finished_seq_groups()
+
+        prefills = SchedulerPrefillOutputs.create_empty()
+        swapped_in = SchedulerSwappedInOutputs.create_empty()
+
+        # Decoding should be always scheduled first by fcfs.
+        running_scheduled = self._schedule_running(budget,
+                                                   curr_loras,
+                                                   enable_chunking=True)
+
+        # Schedule swapped out requests.
+        # If preemption happens, it means we don't have space for swap-in.
+        if len(running_scheduled.preempted) + len(
+                running_scheduled.swapped_out) == 0:
+            swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=True)
+
+        # Schedule new prefills.
+        self.waiting = deque(self.waiting)
+        prefills = self._schedule_baseline_prefills(budget,
+                                           curr_loras,
+                                           enable_chunking=True)
+
+        assert (budget.num_batched_tokens <=
+                self.scheduler_config.max_num_batched_tokens)
+        # assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+
+        # Update waiting requests.
+        self.waiting.extendleft(running_scheduled.preempted)
+
+        # Update new running requests.
+        # By default, vLLM scheduler prioritizes prefills.
+        # Once chunked prefill is enabled,
+        # the policy is changed to prioritize decode requests.
+        self.running.extend(
+            [s.seq_group for s in swapped_in.decode_seq_groups])
+        self.running.extend(
+            [s.seq_group for s in swapped_in.prefill_seq_groups])
+        self.running.extend(
+            [s.seq_group for s in running_scheduled.decode_seq_groups])
+        self.running.extend(
+            [s.seq_group for s in running_scheduled.prefill_seq_groups])
+        self.running.extend([s.seq_group for s in prefills.seq_groups])
+
+        abort_seqs = self._stop_dull_scheduling()
+
+        # Update swapped requests.
+        self.swapped.extend(running_scheduled.swapped_out)
+        return SchedulerOutputs(
+            scheduled_seq_groups=(prefills.seq_groups +
+                                  running_scheduled.prefill_seq_groups +
+                                  swapped_in.prefill_seq_groups +
+                                  running_scheduled.decode_seq_groups +
+                                  swapped_in.decode_seq_groups),
+            num_prefill_groups=(len(prefills.seq_groups) +
+                                len(swapped_in.prefill_seq_groups) +
+                                len(running_scheduled.prefill_seq_groups)),
+            num_batched_tokens=budget.num_batched_tokens,
+            blocks_to_swap_in=swapped_in.blocks_to_swap_in,
+            blocks_to_swap_out=running_scheduled.blocks_to_swap_out,
+            blocks_to_copy=running_scheduled.blocks_to_copy +
+            swapped_in.blocks_to_copy,
+            ignored_seq_groups=prefills.ignored_seq_groups +
+            swapped_in.infeasible_seq_groups + abort_seqs,
+            num_lookahead_slots=running_scheduled.num_lookahead_slots,
+            running_queue_size=len(self.running),
+            preempted=(len(running_scheduled.preempted) +
+                       len(running_scheduled.swapped_out)),
+        )
+    
+    def _solve_delta_pb(self, max_tokens_per_batch, 
+                        time_interval, decode_num, candidates_in_decode):
+        if time_interval <= 0 or decode_num < 0:
+            return 0
+        else:
+            target_latency = min(r.TBT_constraint for r in candidates_in_decode)
+
+        pb_per_batch = max(0, max_tokens_per_batch - decode_num)
+
+        num_batches = int(time_interval / target_latency) if target_latency > 0 else 0
+        return num_batches * pb_per_batch
+    
+    def _reconstruct_optimal_schedule(self, budget, dp, N, candidates):
+        best_value = -1
+        curr_state = None
+        for state, val in dp.items():
+            if state[0] == N and val > best_value:
+                best_value = val
+                curr_state = state
+        if not curr_state or best_value <= 0:
+            return []
+        admitted_reqs = []
+        waiting_reqs = []
+        while curr_state and curr_state[0] > 0:
+            i, pb, n = curr_state
+            found_prev = False
+
+            curr_req = candidates[i-1]
+            for (prev_state, prev_val) in dp.items():
+                prev_i, prev_pb, prev_n = prev_state
+                if prev_i >= i: continue
+
+                prefill_tokens = curr_req.first_seq.get_prompt_len()
+                decode_tokens = curr_req.request_info.real_output_len
+
+                value = prefill_tokens + decode_tokens
+
+                prefill_deadline = curr_req.TTFT_constraint + curr_req.arrival_time
+                candidate_prefill_deadline = candidates[prev_i-1].TTFT_constraint + candidates[prev_i-1].arrival_time
+
+                time_gap = prefill_deadline - (candidate_prefill_deadline if prev_i > 0 else 0)
+                delta_pb = self._solve_delta_pb(budget.token_budget, time_gap, prev_n, candidates[:prev_i])
+                calc_new_pb = min(budget.token_budget, max(0, prev_pb + delta_pb - prefill_tokens))
+
+                if (prev_n + 1 == n and 
+                    calc_new_pb == pb and 
+                    prev_val + value == dp[curr_state]):
+
+                    admitted_reqs.append(curr_req)
+                    curr_state = prev_state
+                    found_prev = True
+                    break
+                
+            if not found_prev:
+                waiting_reqs.append(curr_req)
+                for (prev_state, prev_val) in dp.items():
+                    if prev_state == (i-1, pb, n) and prev_val == dp[curr_state]:
+                        curr_state = prev_state
+                        break
+                else:
+                    print("Error in reconstruct optimal schedule")
+                    break
+
+        assert len(admitted_reqs) + len(waiting_reqs) == len(candidates), "scheduling result mismatch!"
+        return admitted_reqs[::-1], waiting_reqs
+    
+    def _schedule_baseline_prefills(self, budget, curr_loras,
+                                    enable_chunking=True):
+        new_reqs = list(self.waiting)
+        candidates = sorted(new_reqs, key=lambda r: (r.TTFT_constraint + r.arrival_time))
+        N = len(candidates)
+
+        dp = {}
+        dp[0, 0, 0] = 0
+        for i in range(1, N + 1):
+            curr_req = candidates[i-1]
+            for (prev_i, prev_pb, prev_n), prev_val in list(dp.items()):
+                if prev_i >= i: continue
+                state_reject = (i, prev_pb, prev_n)
+                dp[state_reject] = max(dp.get(state_reject, 0), prev_val)
+                
+                prefill_deadline = curr_req.TTFT_constraint + curr_req.arrival_time
+                candidate_prefill_deadline = candidates[prev_i-1].TTFT_constraint + candidates[prev_i-1].arrival_time
+                time_gap = prefill_deadline - (candidate_prefill_deadline if prev_i > 0 else 0)
+
+                delta_pb = self._solve_delta_pb(budget.token_budget, time_gap, prev_n, candidates[:prev_i])
+
+                prefill_tokens = curr_req.first_seq.get_prompt_len()
+
+                new_pb = min(budget.token_budget, max(0, prev_pb + delta_pb - prefill_tokens))
+
+                if prev_pb + delta_pb >= prefill_tokens:
+                    new_n = prev_n + 1
+                    state_accept = (i, new_pb, new_n)
+                    dp[state_accept] = max(dp.get(state_accept, 0), prev_val + curr_req.value)
+
+        scheduled_seqs, waiting_seqs = self._reconstruct_optimal_schedule(budget, dp, N, candidates)
+
+        self.waiting: Deque = deque(scheduled_seqs + waiting_seqs)
+        return self._schedule_prefills(budget, curr_loras, enable_chunking)
 
     def _schedule_slo_prefills(
         self,
