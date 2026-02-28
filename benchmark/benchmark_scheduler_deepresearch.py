@@ -420,8 +420,8 @@ async def benchmark_deepresearch(
     print(f"Running benchmark with {len(collective_requests)} collective requests")
     
     # Test with first request
-    print("Starting initial test run...")
-    test_request = collective_requests[0]
+    # print("Starting initial test run...")
+    # test_request = collective_requests[0]
     
     sampling_params = SamplingParams(
         n=n,
@@ -436,24 +436,24 @@ async def benchmark_deepresearch(
     )
     
     # Run test
-    from trace.client_deepresearch import send_deepresearch_collective_request
+    # from trace.client_deepresearch import send_deepresearch_collective_request
+    # 
+    # test_output = await send_deepresearch_collective_request(
+    #     collective_request=test_request,
+    #     slo_constraint=slo_constraint,
+    #     sampling_params=sampling_params,
+    #     client_id=0,
+    #     api_url=api_url,
+    #     model_name=model,
+    #     penalty_factor=penalty_factor,
+    #     client_deadline=600,
+    # )
     
-    test_output = await send_deepresearch_collective_request(
-        collective_request=test_request,
-        slo_constraint=slo_constraint,
-        sampling_params=sampling_params,
-        client_id=0,
-        api_url=api_url,
-        model_name=model,
-        penalty_factor=penalty_factor,
-        client_deadline=600,
-    )
-    
-    if not test_output.success:
-        # raise ValueError(f"Initial test run failed. Please check your configuration.")
-        print(f"Initial test run failed. Please check your configuration.")
-    else:
-        print("Initial test run completed successfully. Starting main benchmark...")
+    # if not test_output.success:
+    #     # raise ValueError(f"Initial test run failed. Please check your configuration.")
+    #     print(f"Initial test run failed. Please check your configuration.")
+    # else:
+    #     print("Initial test run completed successfully. Starting main benchmark...")
     
     # Setup progress bar
     pbar = None if disable_tqdm else async_tqdm(total=len(collective_requests))

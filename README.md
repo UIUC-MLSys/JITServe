@@ -73,7 +73,7 @@ python jitserve/request_analyzer/prediction.py
 
 Mixed workload benchmark:
 ```bash
-bash scripts/benchmark_mixed.sh
+bash scripts/benchmark_e2e.sh
 ```
 
 Notes:

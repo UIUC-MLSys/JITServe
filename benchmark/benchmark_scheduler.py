@@ -660,28 +660,28 @@ async def benchmark(
         ignore_eos=ignore_eos,
     )
     
-    test_input = RequestInput(
-        request=test_request,
-        slo_constraint=slo_constraint,
-        sampling_params=sampling_params,
-        client_id=0,
-        api_url=api_url,
-    )
-    
-    if test_input.request.request_type == RequestType.COLLECTIVE:
-        test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
-                                                                         model_name=model, 
-                                                                         tot_structure=tot_structure,
-                                                                         penalty_factor=penalty_factor,
-                                                                         client_deadline=200)
-    else:
-        test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model, client_deadline=200)
-    if not test_output[0].success:
-        raise ValueError(
-            "Initial test run failed - Please make sure benchmark arguments "
-            f"are correctly specified. Error: {test_output[0].error}")
-    else:
-        print("Initial test run completed. Starting main benchmark run...")
+    # test_input = RequestInput(
+    #     request=test_request,
+    #     slo_constraint=slo_constraint,
+    #     sampling_params=sampling_params,
+    #     client_id=0,
+    #     api_url=api_url,
+    # )
+    # 
+    # if test_input.request.request_type == RequestType.COLLECTIVE:
+    #     test_output: List[RequestOutput] = await send_collective_request(request_info=test_input,
+    #                                                                      model_name=model, 
+    #                                                                      tot_structure=tot_structure,
+    #                                                                      penalty_factor=penalty_factor,
+    #                                                                      client_deadline=200)
+    # else:
+    #     test_output: List[RequestOutput] = await send_request(request_info=test_input, model_name=model, client_deadline=200)
+    # if not test_output[0].success:
+    #     raise ValueError(
+    #         "Initial test run failed - Please make sure benchmark arguments "
+    #         f"are correctly specified. Error: {test_output[0].error}")
+    # else:
+    #     print("Initial test run completed. Starting main benchmark run...")
 
     print(f"Traffic request rate: {request_rate}")
     print(f"Maximum request concurrency: {max_concurrency}")
