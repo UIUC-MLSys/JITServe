@@ -23,16 +23,10 @@ All JITServe-specific scheduling logic resides in the top-level
 
 ## Installation
 
-Use the setup script from the JITServe repository root:
+First install `uv` from https://docs.astral.sh/uv/getting-started/installation/#installation-methodsUse. Then run the setup script from the JITServe repository root:
 
 ```bash
 ./scripts/setup_vllm.sh
-```
-
-If you want the script to create a virtual environment first:
-
-```bash
-./scripts/setup_vllm.sh --create-venv
 ```
 
 The manual step-by-step process is:
