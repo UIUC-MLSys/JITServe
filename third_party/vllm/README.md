@@ -23,11 +23,55 @@ All JITServe-specific scheduling logic resides in the top-level
 
 ## Installation
 
-Install vLLM from this directory:
+Use the setup script from the JITServe repository root:
 
 ```bash
-pip install -e .
+./scripts/setup_vllm.sh
 ```
+
+If you want the script to create a virtual environment first:
+
+```bash
+./scripts/setup_vllm.sh --create-venv
+```
+
+The manual step-by-step process is:
+
+1. [Optional] Install `uv` from https://docs.astral.sh/uv/getting-started/installation/#installation-methods and create a venv:
+   ```bash
+   uv venv --seed
+   ```
+2. Enter the vendored vLLM directory:
+   ```bash
+   cd third_party/vllm
+   ```
+3. Set the expected vLLM commit:
+   ```bash
+   export VLLM_COMMIT=32176fee733b76b295346870d717d44cb7102944
+   ```
+4. Install the wheel built at that commit:
+   ```bash
+   UV_SKIP_WHEEL_FILENAME_CHECK=1 uv pip install \
+     https://vllm-wheels.s3.us-west-2.amazonaws.com/${VLLM_COMMIT}/vllm-1.0.0.dev-cp38-abi3-manylinux1_x86_64.whl
+   ```
+5. Create the local flash-attn stub directory:
+   ```bash
+   mkdir -p vllm/vllm_flash_attn
+   ```
+6. Run:
+   ```bash
+   python python_only_dev.py
+   ```
+   This script will:
+   - find the installed vLLM package in the current environment
+   - copy built files to this local directory
+   - rename the installed vLLM package
+   - symbolically link this local directory to the installed vLLM package
+7. Return to JITServe root and install JITServe editable:
+   ```bash
+   cd ../..
+   uv pip install -e .
+   ```
 
 ## Pulling Upstream vLLM Updates (For Developers Only)
 We intend to synchronize with upstream vLLM in the future.
