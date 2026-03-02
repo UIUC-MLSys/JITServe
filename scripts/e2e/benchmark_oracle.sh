@@ -1,16 +1,16 @@
 #!/bin/bash
-policies=("jitserve" "ltr" "fcfs" "vllm" "srtf" "autellix")
+policies=("jitserve" "oracle")
 rates=(6.0)
 batch_sizes=(32)
 penalty_factors=(100)
-output_dir="batch_result/test"
+output_dir="batch_result/e2e-oracle/"
 model="meta-llama/Llama-3.1-8B-Instruct"
 
 # trace config paths
 default_trace_file="traces/lmsys.json"
 deepresearch_trace_file="traces/deepresearch_filter.jsonl"
 request_ratios="1,1,1"
-num_prompts="200"
+num_prompts="3000"
 use_all_node="false"
 
 mkdir -p "$output_dir"
