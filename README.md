@@ -64,22 +64,41 @@ pip install -e .
 This installs JITServe into the Python environment and exposes it as a
 package.
 
-## Run Experiments
-
-QRF prediction server:
-```bash
+### Run Experiments
+1. Start QRF Prediction Server:
+```Bash
 python jitserve/request_analyzer/prediction.py
 ```
 
-Mixed workload benchmark:
-```bash
-bash scripts/benchmark_e2e.sh
+2. End-to-End Timeline (Section 6.2, Figure 11 & 12)
+
+⚠️ Note: A full benchmark for a single model typically takes 7–9 hours.
+For quick fuctionality verification: You can manually reduce num_prompts (e.g., to 1000) or slightly increase the request rates in scripts.
+
+```Bash
+# 1. Run benchmark (generates logs in batch_result/e2e-timeline/)
+bash scripts/e2e/benchmark_timeline.sh
+
+# 2. Generate plots from logs
+python figure/e2e/plot_requestgpt_timeline.py
+python figure/e2e/plot_tokengpt_timeline.py
+```
+
+3. End-to-End Oracle Comparison (Section 6.2, Figure 13)
+
+```Bash
+# 1. Run benchmark (30 mins)
+bash scripts/e2e/benchmark_oracle.sh
+
+# 2. Generate plots from logs
+python figure/e2e/plot_oracle.py
 ```
 
 Notes:
 - QRF model paths default to `assets/qrf/`.
 - Model weights are not included in this repository due to licensing
 and size constraints.
+- More benchmark and plot scripts will be released in the future.
 
 ## Citation
 If you use these artifacts, please consider to cite our paper:
