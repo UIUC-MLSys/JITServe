@@ -70,23 +70,25 @@ package.
 python jitserve/request_analyzer/prediction.py
 ```
 
+Note on Other Scripts: Additional experiment scripts are available in the scripts/ directory. For ease of reproduction, the two experiments listed below are selected as they require the minimum time and computing resources while demonstrating the core functionality of JITServe.
+
 2. End-to-End Oracle Comparison (Section 6.2, Figure 13)
 
 ```Bash
 # 1. Run benchmark (3 hours)
 bash scripts/e2e/benchmark_oracle.sh
 
-# 2. Generate plots from logs
+# 2. Generate figure at figure/e2e/plot_oracle
 python -m figure.e2e.plot_oracle
 ```
 
 3. Ablation with SLO-target baseline (Section 6.4, Figure 21)
 
 ```Bash
-# 1. Run benchmark (generates logs in batch_result/e2e-timeline/)
+# 1. Run benchmark (3 hours)
 bash scripts/ablation/benchmark_slosserve.sh
 
-# 2. Generate plots from logs
+# 2. Generate figure at figure/ablation/plot_slosserve
 python -m figure.ablation.plot_slosserve
 ```
 
