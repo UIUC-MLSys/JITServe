@@ -1,6 +1,6 @@
 #!/bin/bash
 policies=("slosserve" "jitserve")
-rates=(2.0 2.5 3.0 3.5 4.5 5.0)
+rates=(2.0 2.5 3.0 3.5 4.0 4.5)
 batch_sizes=(32)
 penalty_factors=(100)
 output_dir="batch_result/ablation-slo/"

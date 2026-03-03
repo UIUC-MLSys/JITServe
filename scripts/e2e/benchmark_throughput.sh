@@ -1,9 +1,9 @@
 #!/bin/bash
 policies=("jitserve" "fcfs")
-rates=(6.0)
+rates=(3.5 4.0 4.5)
 batch_sizes=(32)
 penalty_factors=(100)
-output_dir="batch_result/e2e-throughput/"
+output_dir="batch_result/e2e-throughput"
 model="meta-llama/Llama-3.1-8B-Instruct"
 
 # trace config paths

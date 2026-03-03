@@ -77,7 +77,7 @@ def parse_normal_goodput(file_path, metric):
         if metric == 'request_goodput':
             weighted_gpt = float(re.search(r"Total\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)", content).group(1))
         else:
-            weighted_gpt = float(re.search(r"Total\s+[\d.]+\s+[\d.]+\s+([\d.]+)", content).group(1))
+            weighted_gpt = float(re.search(r"^Total\s+[\d.]+\s+[\d.]+\s+([\d.]+)\s*$", content, re.MULTILINE).group(1))
         return weighted_gpt
     except Exception:
         return None
@@ -112,7 +112,7 @@ def parse_deepresearch_request_num(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        req_num = float(re.search(r"Total Request\s+([\d.]+)", content).group(1))
+        req_num = float(re.search(r"Total Requests\s+([\d.]+)", content).group(1))
         return req_num
     except Exception:
         return None
@@ -135,7 +135,6 @@ def parse_timeline(normal_path, deepresearch_path, metrics):
 def parse_goodput(normal_path, deepresearch_path, metric):
     normal_data = parse_normal_goodput(normal_path, metric)
     deep_data = parse_deepresearch_goodput(deepresearch_path, metric)
-
     normal_duration = parse_duration(normal_path)
     deep_duration = parse_duration(deepresearch_path)
 
@@ -145,7 +144,7 @@ def parse_goodput(normal_path, deepresearch_path, metric):
     return exp_goodput
 
 
-def parse_throughput(normal_path, deepresearch_path, metric):
+def parse_throughput(normal_path, deepresearch_path):
     normal_data = parse_normal_request_num(normal_path)
     deep_data = parse_deepresearch_request_num(deepresearch_path)
 

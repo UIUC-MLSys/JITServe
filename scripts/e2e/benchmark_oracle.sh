@@ -1,6 +1,6 @@
 #!/bin/bash
 policies=("jitserve" "oracle")
-rates=(6.0)
+rates=(3.5 4.0 4.5 5.0 5.5 6.0)
 batch_sizes=(32)
 penalty_factors=(100)
 output_dir="batch_result/e2e-oracle/"
@@ -10,7 +10,7 @@ model="meta-llama/Llama-3.1-8B-Instruct"
 default_trace_file="traces/lmsys.json"
 deepresearch_trace_file="traces/deepresearch_filter.jsonl"
 request_ratios="1,1,1"
-num_prompts="3000"
+num_prompts="2000"
 use_all_node="false"
 
 mkdir -p "$output_dir"
@@ -99,7 +99,7 @@ run_tot_benchmark() {
         --arrival-rate "$arrival_rate" \
         --penalty-factor "$penalty_factor" \
         --batch-size "$batch_size" \
-        --slo-constraint "0.8,0.08,8" \
+        --slo-constraint "1,0.1,10" \
         "${prompts_arg[@]}" \
         --trace-path "$trace_file" > "$output_file" 2>&1 &
 }
@@ -113,7 +113,7 @@ run_deepresearch_benchmark() {
         --policy "$policy_name" \
         --arrival-rate "$rate_deepresearch" \
         --penalty-factor "$penalty_factor" \
-        --slo-constraint "0.8,0.08,8" \
+        --slo-constraint "1,0.1,10" \
         --num-prompts "$num_deep_research" \
         --trace-path "$deepresearch_trace_file" > "$output_file" 2>&1 &
 }

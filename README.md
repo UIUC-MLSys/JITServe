@@ -70,28 +70,24 @@ package.
 python jitserve/request_analyzer/prediction.py
 ```
 
-2. End-to-End Timeline (Section 6.2, Figure 11 & 12)
-
-⚠️ Note: A full benchmark for a single model typically takes 7–9 hours.
-For quick fuctionality verification: You can manually reduce num_prompts (e.g., to 1000) or slightly increase the request rates in scripts.
+2. End-to-End Oracle Comparison (Section 6.2, Figure 13)
 
 ```Bash
-# 1. Run benchmark (generates logs in batch_result/e2e-timeline/)
-bash scripts/e2e/benchmark_timeline.sh
-
-# 2. Generate plots from logs
-python figure/e2e/plot_requestgpt_timeline.py
-python figure/e2e/plot_tokengpt_timeline.py
-```
-
-3. End-to-End Oracle Comparison (Section 6.2, Figure 13)
-
-```Bash
-# 1. Run benchmark (30 mins)
+# 1. Run benchmark (3 hours)
 bash scripts/e2e/benchmark_oracle.sh
 
 # 2. Generate plots from logs
-python figure/e2e/plot_oracle.py
+python -m figure.e2e.plot_oracle
+```
+
+3. Ablation with SLO-target baseline (Section 6.4, Figure 21)
+
+```Bash
+# 1. Run benchmark (generates logs in batch_result/e2e-timeline/)
+bash scripts/ablation/benchmark_slosserve.sh
+
+# 2. Generate plots from logs
+python -m figure.ablation.plot_slosserve
 ```
 
 Notes:

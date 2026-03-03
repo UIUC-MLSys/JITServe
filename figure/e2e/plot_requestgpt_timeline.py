@@ -6,7 +6,7 @@ import re
 
 from pathlib import Path
 from typing import Dict, List, Optional
-from utils import parse_timeline
+from ..utils import parse_timeline
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -118,7 +118,7 @@ def plot_service_gain_comparison(
 
     ax.set_title(f"{model}", fontsize=20, pad=10)
     if model == "Llama-3.1-8B-Instruct":
-        ax.set_ylabel("Token Goodput (token/s)", fontsize=20)
+        ax.set_ylabel("Request Goodput (req/s)", fontsize=20)
     ax.grid(True, linestyle='-' if policy_name not in ["LTR", "vLLM"] else '--', alpha=0.5)
     
     ax.xaxis.set_major_locator(ticker.FixedLocator(ax.get_xticks()))
@@ -222,7 +222,7 @@ def plot(models, directory):
     fig.text(0.5, 0, 'Time (minutes)', ha='center', fontsize=20)
 
     plt.savefig(
-        "figure/e2e/request_goodput_timeline_model.pdf",
+        "figure/e2e/e2e_request_goodput_timeline.pdf",
         bbox_inches='tight',
         dpi=300
     )

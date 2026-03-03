@@ -1,7 +1,7 @@
 #!/bin/bash
 # config setting for experiments
 policies=("jitserve" "ltr" "fcfs" "vllm" "autellix")
-rates=(4.0)
+rates=(6.0)
 batch_sizes=(32)
 penalty_factors=(100)
 
@@ -16,7 +16,7 @@ output_dir="batch_result/e2e-timeline/${model_short_name}/"
 default_trace_file="traces/lmsys.json"
 deepresearch_trace_file="traces/deepresearch_filter.jsonl"
 request_ratios="1,1,1"
-num_prompts="15000"
+num_prompts="13000"
 use_all_node="false"
 
 mkdir -p "$output_dir"

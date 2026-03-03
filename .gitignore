@@ -27,7 +27,7 @@ benchmark/utils/*.png
 batch_result/
 result/
 fig/
-figure/*.pdf
+figure/**/*.pdf
 
 # Simulation
 simulate.sh

@@ -6,7 +6,7 @@ import re
 
 from pathlib import Path
 from typing import Dict, List, Optional
-from utils import parse_timeline
+from ..utils import parse_timeline
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -192,9 +192,9 @@ def plot(models, directory):
         results = {}
         for key, paths in experiments.items():
             if 'normal' in paths and 'deep' in paths:
-                request_goodput = parse_timeline(paths['normal'], paths['deep'], ['request_goodput'])
-                results[key] = request_goodput['request_goodput']
-        
+                token_goodput = parse_timeline(paths['normal'], paths['deep'], ['token_goodput'])
+                results[key] = token_goodput['token_goodput']
+
         policies = {
             "JITServe": results.get("jitserve"),
             "LTR": results.get("ltr"),
@@ -222,7 +222,7 @@ def plot(models, directory):
     fig.text(0.5, 0, 'Time (minutes)', ha='center', fontsize=20)
 
     plt.savefig(
-        "figure/e2e/token_goodput_timeline_model.pdf",
+        "figure/e2e/e2e_token_goodput_timeline.pdf",
         bbox_inches='tight',
         dpi=300
     )
