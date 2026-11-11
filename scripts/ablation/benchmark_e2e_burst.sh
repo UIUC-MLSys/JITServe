@@ -3,7 +3,7 @@ policies=("jitserve" "ltr" "fcfs" "vllm" "srtf" "autellix")
 rates=(6.0)
 batch_sizes=(32)
 penalty_factors=(100)
-output_dir="batch_result/test"
+output_dir="batch_result/test_burst"
 model="meta-llama/Llama-3.1-8B-Instruct"
 
 # trace config paths
@@ -100,6 +100,7 @@ run_tot_benchmark() {
         --penalty-factor "$penalty_factor" \
         --batch-size "$batch_size" \
         --slo-constraint "0.8,0.08,8" \
+        --burst True \
         "${prompts_arg[@]}" \
         --trace-path "$trace_file" > "$output_file" 2>&1 &
 }
@@ -115,6 +116,7 @@ run_deepresearch_benchmark() {
         --penalty-factor "$penalty_factor" \
         --slo-constraint "0.8,0.08,8" \
         --num-prompts "$num_deep_research" \
+        --burst True \
         --trace-path "$deepresearch_trace_file" > "$output_file" 2>&1 &
 }
 
@@ -150,8 +152,11 @@ for rate in "${rates[@]}"; do
                 echo "Starting server..."
                 start_server "$policy"
                 server_pid=$!
-                echo "Waiting for server init (40s)..."
-                sleep 40
+                echo "Waiting for server init..."
+                until curl -sf localhost:8000/health >/dev/null; do
+                    kill -0 $server_pid 2>/dev/null || { echo "Server exited during init"; exit 1; }
+                    sleep 5
+                done
                 echo "Starting client..."
                 
                 # benchmark_scheduler.py

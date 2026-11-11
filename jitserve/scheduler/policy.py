@@ -16,6 +16,9 @@ class BasePolicy(ABC):
     and defines an abstract method `get_priority`. Subclasses must implement 
     this method to calculate priority for sequence groups.
     '''
+    # Whether get_priority's first element is -(goodput density), as in JITServe.
+    ranks_by_density = False
+
     def __init__(
         self,
         schedule_interval: int,
@@ -69,6 +72,22 @@ class BasePolicy(ABC):
     def _get_interval_time(self) -> float:
         return self.interval_time if self.interval_time else DEFAULT_SCHEDULE_INTERVAL
 
+    def frame_time(self) -> float:
+        """Wall-clock length of one scheduling frame (Δ iterations)."""
+        return self.schedule_interval * self._get_interval_time()
+
+    @staticmethod
+    def _predicted_len(seq_group: SequenceGroup) -> int:
+        """Current upper bound on the total output length (refined online)."""
+        return seq_group.request_info.output_len
+
+    @classmethod
+    def _remaining_len(cls, seq_group: SequenceGroup) -> int:
+        """len_rem(r). Never <= 0: the server raises the bound past the decoded
+        length at the next refinement, so until then assume >= 1 token left."""
+        decode_len = seq_group.seqs[0].get_decode_len()
+        return max(cls._predicted_len(seq_group) - decode_len, 1)
+
     @staticmethod
     def _safe_ratio(numer: float, denom: float) -> float:
         """Clamp ratio between 1e-6 and 1.0 to avoid blowups."""
@@ -95,6 +114,13 @@ class BasePolicy(ABC):
             if len(self.seq_group_dict[seq_group.collection_id]) == 0:
                 del self.seq_group_dict[seq_group.collection_id]
     
+    def arrival_key(self, output_len: int, deadline: float) -> Tuple[float, float]:
+        '''
+        Sort key a new arrival would get, for multi-replica placement. FCFS orders
+        by arrival; LAS by attained service (none yet), then arrival.
+        '''
+        return (0, time.time())
+
     @abstractmethod 
     def get_priority(self, seq_group: SequenceGroup) -> float:
         '''
@@ -159,12 +185,14 @@ class SJFPolicy(BasePolicy):
         super().__init__(schedule_interval, penalty_factor)
         logger.info("SJF policy is used")
 
+    def arrival_key(self, output_len: int, deadline: float) -> Tuple[float, float]:
+        return (0, output_len)
+
     def get_priority(self, seq_group: SequenceGroup) -> float:
         '''
         Calculate the priority based on the expected output length minus the actual output length.
         '''
-        seq_group.predict_output_length = seq_group.request_info.output_len
-        return (0, seq_group.predict_output_length)
+        return (0, self._predicted_len(seq_group))
 
 
 class SRTFPolicy(BasePolicy):
@@ -180,6 +208,9 @@ class SRTFPolicy(BasePolicy):
     ) -> None:
         super().__init__(schedule_interval, penalty_factor)
         logger.info("SRTF policy is used")
+
+    def arrival_key(self, output_len: int, deadline: float) -> Tuple[float, float]:
+        return (0, deadline)
     
     def get_priority(self, seq_group: SequenceGroup) -> float:
         '''
@@ -228,24 +259,32 @@ class SLOPolicy(BasePolicy):
     This policy uses a weighted decay function to adjust the priority based on the real and expected output lengths.
     The goal is to maximize SLO (Service Level Objective) satisfaction.
     '''
+    ranks_by_density = True
+
     def __init__(
         self,
         schedule_interval: int = 50,
-        penalty_factor: int = 1
+        penalty_factor: int = 1,
+        starvation_delta: float = 0.0,
     ) -> None:
         super().__init__(schedule_interval, penalty_factor)
+        # §4.2: deemed goodput is inflated by δ per frame a request waits, so
+        # long-waiting (e.g. best-effort) requests eventually rise in priority.
+        self.starvation_delta = starvation_delta
         logger.info("SLO policy is used")
         
     def allocation_control(self, seq_group: SequenceGroup) -> float:
-        total_remain_time = 0
+        # §4.2: len_rem and bandwidth are aggregated over the current stage.
         unit_time = self._get_interval_time()
-        for peer_seq_group in self.seq_group_dict[seq_group.collection_id]:
-            peer_predict_output_len = peer_seq_group.predict_output_length
-            peer_decode_len = peer_seq_group.seqs[0].get_decode_len()
-            peer_remain_time = unit_time * (peer_predict_output_len - peer_decode_len)
-            total_remain_time += peer_remain_time
-            
-        return total_remain_time
+        return sum(unit_time * self._remaining_len(peer)
+                   for peer in self.seq_group_dict[seq_group.collection_id])
+
+    def _starvation_bonus(self, seq_group: SequenceGroup,
+                          cur_time: float) -> float:
+        if self.starvation_delta <= 0:
+            return 0.0
+        last = seq_group.concord_metrics.last_schedule_time or seq_group.arrival_time
+        return self.starvation_delta * max(0.0, cur_time - last) / self.frame_time()
 
     def _compute_remain_time(self, seq_group: SequenceGroup, remain_len: int,
                              unit_time: float) -> float:
@@ -286,9 +325,8 @@ class SLOPolicy(BasePolicy):
     def reward_estimation(self, seq_group: SequenceGroup) -> Tuple[float, float]:
         cur_time = time.time()
         input_len = seq_group.seqs[0].get_prompt_len()
-        decode_len = seq_group.seqs[0].get_decode_len()
-        predict_output_len = seq_group.request_info.output_len
-        remain_len = predict_output_len - decode_len
+        predict_output_len = self._predicted_len(seq_group)
+        remain_len = self._remaining_len(seq_group)
 
         unit_time = self._get_interval_time()
         remain_time = self._compute_remain_time(seq_group, remain_len,
@@ -307,12 +345,14 @@ class SLOPolicy(BasePolicy):
                                                       predict_output_len,
                                                       remain_time, serve_time)
 
+        reward += self._starvation_bonus(seq_group, cur_time)
         return reward, remain_time
 
     def get_priority(self, seq_group: SequenceGroup) -> float:
         """
-        Calculate scheduling priority using SLO/Jitserve policy.
-        Uses dynamic `interval_time` instead of fixed TBT constraint.
+        Priority(r) = goodput(r) / t_gen(r)  (paper §4.2), with
+        t_gen = len_rem * v_token and v_token the measured per-iteration time.
+        Returned as (-priority, t_gen) so that ascending order = best first.
         """
         # Check if priority is already computed
         if self.seq_group_slo_dict.get(seq_group.request_id) is not None:

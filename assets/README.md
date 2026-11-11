@@ -30,3 +30,12 @@ huggingface-cli download En-2863/jitserve-qrf-length-predictor \
   --local-dir assets/qrf/ \
   --local-dir-use-symlinks False
 ```
+
+### Alternative: Use JITServe's uv environment
+From the repository root:
+
+```bash
+uv pip install -e .
+source .venv/bin/activate
+python assets/download_qrf.py
+```

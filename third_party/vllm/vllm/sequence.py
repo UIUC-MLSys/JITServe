@@ -736,14 +736,8 @@ class SequenceGroup:
         # slo/jitserve related args
         self.num_cumulative_preemption = 0
         self.collection_id = request_info.collection_id
-        self.deadline = (
-            request_info.deadline
-            if request_info.request_type != RequestType.LATENCY
-            else request_info.slo_constraint[0] + request_info.slo_constraint[1] * request_info.real_output_len
-        )
         self.TTFT_constraint = request_info.slo_constraint[0]
         self.TBT_constraint = request_info.slo_constraint[1]
-        self.predict_output_length = request_info.output_len
         self.request_type = request_info.request_type
         self.request_info = request_info
         self.concord_metrics = RequestSLOMetrics(time.time())
@@ -752,6 +746,22 @@ class SequenceGroup:
 
         for seq in self.seqs:
             seq.real_output_len = request_info.real_output_len
+
+    @property
+    def predict_output_length(self) -> int:
+        # Upper-bound output length from the Request Analyzer. The server
+        # refines request_info.output_len online, so always read it from there.
+        return self.request_info.output_len
+
+    @property
+    def deadline(self) -> float:
+        # Latency-sensitive requests have no explicit E2E deadline; derive it
+        # from the TTFT/TBT SLOs and the *predicted* length (never the true
+        # length, which the scheduler must not see).
+        if self.request_type == RequestType.LATENCY:
+            return (self.TTFT_constraint +
+                    self.TBT_constraint * self.request_info.output_len)
+        return self.request_info.deadline
 
     @property
     def prompt(self) -> Optional[str]:

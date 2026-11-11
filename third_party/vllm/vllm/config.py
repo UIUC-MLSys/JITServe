@@ -1028,6 +1028,14 @@ class SchedulerConfig:
                  top_k_selection: int = 1,
                  max_swaps_per_iter: int = 3,
                  search_strategy: str = "sliding_window",
+                 gmax_cutoff: float = 0.95,
+                 gmax_window: int = 0,
+                 adaptive_cutoff: bool = True,
+                 preemption_threshold: float = 0.1,
+                 swap_bandwidth_gbps: float = 16.0,
+                 starvation_delta: float = 0.0,
+                 fairness_weight: float = 0.0,
+                 max_waiting_time: float = 0.0,
                  ) -> None:
         if max_num_batched_tokens is None:
             if enable_chunked_prefill:
@@ -1081,6 +1089,14 @@ class SchedulerConfig:
         self.top_k_selection = top_k_selection
         self.max_swaps_per_iter = max_swaps_per_iter
         self.search_strategy = search_strategy
+        self.gmax_cutoff = gmax_cutoff
+        self.gmax_window = gmax_window
+        self.adaptive_cutoff = adaptive_cutoff
+        self.preemption_threshold = preemption_threshold
+        self.swap_bandwidth_gbps = swap_bandwidth_gbps
+        self.starvation_delta = starvation_delta
+        self.fairness_weight = fairness_weight
+        self.max_waiting_time = max_waiting_time
         self._verify_args()
 
     def _verify_args(self) -> None:

@@ -7,13 +7,14 @@ change `vllm/entrypoints/openai/api_server.py` instead.
 """
 import asyncio
 import json
-import pickle
-import socket
+import os
 import ssl
+import subprocess
+import sys
 from argparse import Namespace
-import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
-from typing import Any, AsyncGenerator, Optional, Tuple, List, Dict
+from typing import Any, AsyncGenerator, AsyncIterator, Optional, Tuple, List, Dict
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -22,8 +23,11 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.launcher import serve_http
 from vllm.logger import init_logger
-from jitserve.request_analyzer.prediction import load_model
+from vllm.outputs import RequestOutput
+from jitserve.request_analyzer.prediction import (DEFAULT_PORT,
+                                                  PredictionClient)
 from jitserve.request_analyzer.deepresearch_trace_reader import read_deepresearch_traces
+from jitserve.scheduler.replica_score import estimate_replica_priority
 from jitserve.request_analyzer.graph_context import GraphMatchContext
 from jitserve.request_analyzer.similarity import Default_DeepResearch_Stage
 from vllm.sampling_params import SamplingParams
@@ -43,14 +47,23 @@ DEFAULT_PREDICTION_LENGTH = 1024
 app = FastAPI()
 engine = None
 
-# Prediction model
+# Prediction model (separate process, see request_analyzer/prediction.py)
 use_prediction = False
 use_default_length = False
+prediction_client: Optional[PredictionClient] = None
+prediction_executor = ThreadPoolExecutor(max_workers=8,
+                                         thread_name_prefix="qrf")
+
+# Online length refinement (paper §4.1): refine the bound every
+# `refine_interval` generated tokens. "conditional": q-quantile of the QRF
+# distribution for the prompt given the tokens generated so far; "literal":
+# re-run QRF on prompt + generated text.
+use_online_refinement = False
+refine_interval = 50
+refine_mode = "conditional"
 
 # Deepresearch base graphs for graph matching
 deepresearch_base_graphs = []
-prediction_model = None
-prediction_tokenizer = None
 
 # Generation tokenizer
 generation_tokenizer = None
@@ -64,30 +77,28 @@ use_all_node = False  # All-node vs super-node approach
 stage_ratio_method = "execution_time"  # "execution_time" or "output_length"
 graph_ctx: Optional[GraphMatchContext] = None
 
-def send_request_to_prediction(connection: socket.socket, request_info: RequestInfo, prompt):
-    try:
-        data = {'prompt': [prompt]}
-        data_to_send = pickle.dumps(data)
-        connection.sendall(data_to_send)
+def predict_and_update_request_info(request_info: RequestInfo, text: str,
+                                    decoded_len: int = 0) -> None:
+    """Set request_info.output_len to the QRF upper bound for `text`.
 
-        data = connection.recv(4096)
-        if data:
-            received_data = pickle.loads(data)
-            return received_data['output_len'][0]
-        else:
-            return 1024
-    except socket.error as e:
-        # logger.info(f"Error while sending/receiving data: {e}")
-        return 1024
-
-def send_and_update_request_info(request_info: RequestInfo, prompt: str):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect(('localhost', 65433))
-
-        result_len = send_request_to_prediction(s, request_info, prompt)
-
-        if result_len:
-            request_info.output_len = result_len
+    For refinements (decoded_len > 0) the bound is kept at least
+    `refine_interval` tokens beyond what has already been generated, so the
+    remaining length stays positive until the next refinement.
+    """
+    result = None
+    if prediction_client is not None:
+        decoded = [decoded_len] if decoded_len > 0 and refine_mode == "conditional" else None
+        result = prediction_client.predict([text], decoded)
+    if not result or result[0] < 0:
+        if decoded_len == 0:
+            logger.warning("Length prediction failed; keeping default %d",
+                           request_info.output_len)
+        bound = request_info.output_len
+    else:
+        bound = result[0]
+    if decoded_len > 0:
+        bound = max(bound, decoded_len + refine_interval)
+    request_info.output_len = bound
 
 
 def _build_sampling_params(request_dict: Dict[str, Any]) -> SamplingParams:
@@ -116,14 +127,41 @@ def _apply_request_deadline(request_info: RequestInfo,
         request_info.deadline = request_info.slo_constraint[2] * num_stages
 
 
-def _maybe_start_prediction(request_info: RequestInfo, prompt: str) -> None:
+def _maybe_start_prediction(request_info: RequestInfo, prompt: str,
+                            predicted_len: Optional[int] = None) -> None:
     if not use_prediction:
+        return
+    if predicted_len is not None:
+        # Already predicted upstream (multi-replica router).
+        request_info.output_len = int(predicted_len)
         return
     request_info.output_len = DEFAULT_PREDICTION_LENGTH
     if not use_default_length:
-        threading.Thread(target=send_and_update_request_info,
-                         args=(request_info, prompt),
-                         daemon=True).start()
+        prediction_executor.submit(predict_and_update_request_info,
+                                   request_info, prompt)
+
+
+async def _refine_online(results_generator: AsyncIterator[RequestOutput],
+                         request_info: RequestInfo,
+                         prompt: str) -> AsyncIterator[RequestOutput]:
+    next_refine = refine_interval
+    async for request_output in results_generator:
+        if (use_online_refinement and not request_output.finished
+                and request_output.outputs):
+            output = request_output.outputs[0]
+            decoded = len(output.token_ids)
+            if decoded >= next_refine:
+                next_refine = decoded + refine_interval
+                text = prompt if refine_mode == "conditional" else prompt + output.text
+                prediction_executor.submit(predict_and_update_request_info,
+                                           request_info, text, decoded)
+        yield request_output
+
+
+def _is_dropped(request_output: RequestOutput) -> bool:
+    # Admission control finishes a request without generating any token.
+    return request_output.finished and all(
+        len(output.token_ids) == 0 for output in request_output.outputs)
 
 
 def _handle_collective_request(request_info: RequestInfo,
@@ -173,6 +211,16 @@ async def health() -> Response:
     return Response(status_code=200)
 
 
+@app.post("/score")
+async def score(request: Request) -> Response:
+    """Replica-specific priority of a not-yet-placed request (power-of-K,
+    paper §4.3). Used by jitserve/router.py."""
+    body = await request.json()
+    assert engine is not None
+    scheduler = engine.engine.scheduler[0]
+    return JSONResponse(estimate_replica_priority(scheduler, **body))
+
+
 @app.post("/generate")
 async def generate(request: Request) -> Response:
     """Generate completion for the request.
@@ -188,10 +236,11 @@ async def generate(request: Request) -> Response:
 
     logger.debug(f"stream: {stream}")
 
+    predicted_len = request_dict.pop("predicted_output_len", None)
     sampling_params = _build_sampling_params(request_dict)
     request_info, prompt = _build_request_info(request_dict, client_id)
     _apply_request_deadline(request_info, request_dict)
-    _maybe_start_prediction(request_info, prompt)
+    _maybe_start_prediction(request_info, prompt, predicted_len)
 
     request_id = random_uuid()
     is_deepresearch = False
@@ -205,6 +254,25 @@ async def generate(request: Request) -> Response:
                                         sampling_params, request_id, client_id=request_info.client_id)
     results_generator = iterate_with_cancellation(
         results_generator, is_cancelled=request.is_disconnected)
+    refined_generator = _refine_online(results_generator, request_info,
+                                       prompt)
+
+    try:
+        first_output = await refined_generator.__anext__()
+    except asyncio.CancelledError:
+        return Response(status_code=499)
+    except StopAsyncIteration:
+        return Response(status_code=500)
+    if _is_dropped(first_output):
+        return JSONResponse({"error": "dropped by admission control"},
+                            status_code=503)
+
+    async def with_first() -> AsyncIterator[RequestOutput]:
+        yield first_output
+        async for request_output in refined_generator:
+            yield request_output
+
+    results_generator = with_first()
 
     # Streaming case
     async def stream_results() -> AsyncGenerator[bytes, None]:
@@ -289,6 +357,7 @@ async def init_app(
     global stage_ratio_method
     global generation_tokenizer
     global graph_ctx
+    global use_online_refinement
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.max_model_len = 8192
@@ -297,6 +366,13 @@ async def init_app(
         if engine_args.scheduling_policy in ['ltr', 'jitserve', 'slo']:
             use_prediction = True
             logger.info(f"Prediction model is enabled")
+            # Online refinement is part of JITServe's Request Analyzer; the
+            # LTR baseline keeps its one-shot prediction.
+            if (engine_args.scheduling_policy in ['jitserve', 'slo']
+                    and not args.disable_online_refinement):
+                use_online_refinement = True
+                logger.info("Online length refinement every %d tokens",
+                            refine_interval)
             
     if not args.disable_graph_matching:
         if engine_args.scheduling_policy in ['jitserve', 'slo', 'srtf']:
@@ -361,21 +437,30 @@ async def init_app(
     return app
 
 
-async def init_prediction_model(
-    args: Namespace,
-) -> None:
-    model_path = args.prediction_model_path
-    tokenizer_path = args.prediction_tokenizer_path
-
-    global prediction_model
-    global prediction_tokenizer
-
-    prediction_model, prediction_tokenizer = load_model(model_path, tokenizer_path)
-    
-    assert prediction_model is not None
-    assert prediction_tokenizer is not None
-
-    return
+async def init_prediction_service(args: Namespace) -> None:
+    """Connect to the QRF prediction process, starting it if needed."""
+    global prediction_client
+    global refine_interval
+    global refine_mode
+    refine_interval = args.refine_interval
+    refine_mode = args.refine_mode
+    prediction_client = PredictionClient(port=args.prediction_port)
+    if prediction_client.is_alive():
+        logger.info("Using prediction server on port %d", args.prediction_port)
+        return
+    logger.info("Starting prediction server on port %d", args.prediction_port)
+    subprocess.Popen(
+        [sys.executable, "-m", "jitserve.request_analyzer.prediction",
+         "--port", str(args.prediction_port),
+         "--model-path", args.prediction_model_path,
+         "--tokenizer-path", args.prediction_tokenizer_path],
+        cwd=os.getcwd())
+    deadline = time.time() + 600
+    while not prediction_client.is_alive():
+        if time.time() > deadline:
+            raise RuntimeError("Prediction server did not start")
+        await asyncio.sleep(2)
+    logger.info("Prediction server is up")
 
 
 async def run_server(args: Namespace,
@@ -383,8 +468,10 @@ async def run_server(args: Namespace,
                      **uvicorn_kwargs: Any) -> None:
     logger.info("args: %s", args)
 
-    if args.disable_prediction is False:
-        await init_prediction_model(args)
+    if not args.disable_prediction and args.scheduling_policy in [
+            'ltr', 'jitserve', 'slo'
+    ] and not args.use_default_length:
+        await init_prediction_service(args)
     app = await init_app(args, llm_engine)
     assert engine is not None
 
@@ -447,6 +534,27 @@ if __name__ == "__main__":
         type=str,
         default='assets/qrf/qrf_vectorizer/0_qrf_lmsys_chat_llama3_8b.pkl',
         help="Path to the prediction tokenizer")
+    parser.add_argument(
+        "--prediction-port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="Port of the QRF prediction server (started if not running)")
+    parser.add_argument(
+        "--refine-interval",
+        type=int,
+        default=50,
+        help="Re-predict the length bound every N generated tokens")
+    parser.add_argument(
+        "--refine-mode",
+        type=str,
+        choices=["conditional", "literal"],
+        default="conditional",
+        help="conditional: QRF quantile given tokens generated so far; "
+        "literal: re-run QRF on prompt + generated text")
+    parser.add_argument(
+        "--disable-online-refinement",
+        action='store_true',
+        help="Predict the length once from the prompt only")
     parser.add_argument(
         "--graph-structure-type",
         type=str,
