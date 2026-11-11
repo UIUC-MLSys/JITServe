@@ -150,8 +150,11 @@ for rate in "${rates[@]}"; do
                 echo "Starting server..."
                 start_server "$policy"
                 server_pid=$!
-                echo "Waiting for server init (40s)..."
-                sleep 40
+                echo "Waiting for server init..."
+                until curl -sf localhost:8000/health >/dev/null; do
+                    kill -0 $server_pid 2>/dev/null || { echo "Server exited during init"; exit 1; }
+                    sleep 5
+                done
                 echo "Starting client..."
                 
                 # benchmark_scheduler.py

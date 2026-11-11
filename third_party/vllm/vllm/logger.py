@@ -43,6 +43,12 @@ DEFAULT_LOGGING_CONFIG = {
             "level": "DEBUG",
             "propagate": False,
         },
+        # JITServe's scheduler/policy modules log through init_logger too.
+        "jitserve": {
+            "handlers": ["vllm"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
     },
     "version": 1,
     "disable_existing_loggers": False

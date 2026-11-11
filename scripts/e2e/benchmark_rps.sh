@@ -1,8 +1,10 @@
 #!/bin/bash
 policies=("jitserve" "fcfs" "vllm" "ltr" "autellix")
-rates=(4.0 4.5 5.0 5.5 6.0 6.5)
+rates=(${RATES:-4.0 4.5 5.0 5.5 6.0 6.5})   # e.g. RATES=6.0 for a single ~10-min point
 batch_sizes=(32)
 penalty_factors=(100)
+max_num_seqs=128           # cap on concurrently running requests, same for every policy
+gmax_window=32             # GMAX window B per frame (JITServe only)
 output_dir="batch_result/e2e-rps/"
 model="meta-llama/Llama-3.1-8B-Instruct"
 
@@ -78,7 +80,8 @@ start_server() {
         $prediction_arg \
         --enable-chunked-prefill "$chunked_prefill" \
         --penalty-factor "$penalty_factor" \
-        --max-num-seqs "$batch_size" \
+        --max-num-seqs "$max_num_seqs" \
+        --gmax-window "$gmax_window" \
         $extra_args \
         --model "$model" &
 }
@@ -150,8 +153,11 @@ for rate in "${rates[@]}"; do
                 echo "Starting server..."
                 start_server "$policy"
                 server_pid=$!
-                echo "Waiting for server init (40s)..."
-                sleep 40
+                echo "Waiting for server init..."
+                until curl -sf localhost:8000/health >/dev/null; do
+                    kill -0 $server_pid 2>/dev/null || { echo "Server exited during init"; exit 1; }
+                    sleep 5
+                done
                 echo "Starting client..."
                 
                 # benchmark_scheduler.py

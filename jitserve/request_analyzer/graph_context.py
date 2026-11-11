@@ -191,6 +191,10 @@ class GraphMatchContext:
     def _online_ratio(self, num_stages: int, requests_per_stage: Optional[List[
             int]], prompt: str, collection_id: int, is_deepresearch: bool,
                       stage_id: int) -> float:
+        # The caller computes deadline = total * ratio - served_time, so the
+        # ratio must be the budget share up to the END of this stage
+        # (stages [0, stage]). Using [:stage] gave stage 0 a zero deadline,
+        # i.e. every first-stage collective request looked already late.
         if not is_deepresearch:
             tot_structure = self.collection_graph_unfinished_dict[collection_id]
             unfinished_graph = tot_structure.convert_to_unfinished_graph(
@@ -204,10 +208,10 @@ class GraphMatchContext:
             from jitserve.request_analyzer.similarity import Default_ToT_Requests_Pattern
             if best_match and best_match.times:
                 if stage < len(best_match.times):
-                    return sum(best_match.times[:stage]) / sum(best_match.times)
-                return sum(Default_ToT_Requests_Pattern[:stage]) / sum(
+                    return sum(best_match.times[:stage + 1]) / sum(best_match.times)
+                return sum(Default_ToT_Requests_Pattern[:stage + 1]) / sum(
                     Default_ToT_Requests_Pattern)
-            return sum(Default_ToT_Requests_Pattern[:stage]) / sum(
+            return sum(Default_ToT_Requests_Pattern[:stage + 1]) / sum(
                 Default_ToT_Requests_Pattern)
 
         deepresearch_structure = self.collection_deepresearch_unfinished_dict[
@@ -219,9 +223,9 @@ class GraphMatchContext:
             f"DeepResearch collection_id: {collection_id}, stage_id: {stage_id}, best_match: {best_match}"
         )
         if best_match and best_match.times and stage_id < len(best_match.times):
-            ratio_1 = sum(best_match.times[:stage_id]) / sum(best_match.times)
-            ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id]) / sum(
+            ratio_1 = sum(best_match.times[:stage_id + 1]) / sum(best_match.times)
+            ratio_2 = sum(Default_DeepResearch_Requests_Pattern[:stage_id + 1]) / sum(
                 Default_DeepResearch_Requests_Pattern)
             return max(ratio_1, ratio_2)
-        return sum(Default_DeepResearch_Requests_Pattern[:stage_id]) / sum(
+        return sum(Default_DeepResearch_Requests_Pattern[:stage_id + 1]) / sum(
             Default_DeepResearch_Requests_Pattern)

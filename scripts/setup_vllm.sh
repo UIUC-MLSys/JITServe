@@ -15,6 +15,7 @@ The script creates/uses .venv in the repository root and installs through uv.
 
 Environment:
   VLLM_COMMIT     Override the vLLM commit used for the prebuilt wheel.
+  PYTHON_VERSION  Python for a newly created .venv (default 3.10).
 EOF
 }
 
@@ -43,7 +44,8 @@ if [[ ! -d "$VLLM_DIR" ]]; then
 fi
 
 if [[ ! -d "$EXPECTED_VENV" ]]; then
-  (cd "$ROOT_DIR" && uv venv --seed)
+  # torch 2.5.0 (pulled by the vLLM wheel) has no wheel for Python >= 3.13.
+  (cd "$ROOT_DIR" && uv venv --seed --python "${PYTHON_VERSION:-3.10}")
 fi
 
 PYTHON_BIN="${EXPECTED_VENV}/bin/python"

@@ -187,6 +187,14 @@ class EngineArgs:
     top_k_selection: int = 1
     max_swaps_per_iter: int = 3
     search_strategy: Optional[Literal["sliding_window", "length_bin"]] = "sliding_window"
+    gmax_cutoff: float = 0.95
+    gmax_window: int = 0
+    disable_adaptive_cutoff: bool = False
+    preemption_threshold: float = 0.1
+    swap_bandwidth_gbps: float = 16.0
+    starvation_delta: float = 0.0
+    fairness_weight: float = 0.0
+    max_waiting_time: float = 0.0
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -888,6 +896,59 @@ class EngineArgs:
             'when using slo/jitserve scheduling method.'
         )
 
+        # GMAX knobs (JITServe paper §4.2, §4.3, §5); jitserve/slo policy only.
+        parser.add_argument(
+            '--gmax-cutoff',
+            type=float,
+            default=EngineArgs.gmax_cutoff,
+            help='Initial cutoff p: keep requests with priority >= '
+            'p * Priority(r_B), where r_B is the B-th highest priority.')
+        parser.add_argument(
+            '--gmax-window',
+            type=int,
+            default=EngineArgs.gmax_window,
+            help='B, the number of requests GMAX selects per frame. The '
+            'running set is bounded separately by --max-num-seqs and the KV '
+            'cache. 0 means B = --max-num-seqs.')
+        parser.add_argument(
+            '--disable-adaptive-cutoff',
+            action='store_true',
+            help='Keep p fixed instead of adapting it online to the '
+            'achieved goodput.')
+        parser.add_argument(
+            '--preemption-threshold',
+            type=float,
+            default=EngineArgs.preemption_threshold,
+            help='delta in the preemption rule: a running request B is '
+            'preempted for A only if Priority(A) > (1+delta) Priority(B) and '
+            'the gain over a frame exceeds goodput_loss = stall x speed.')
+        parser.add_argument(
+            '--swap-bandwidth-gbps',
+            type=float,
+            default=EngineArgs.swap_bandwidth_gbps,
+            help='GPU<->CPU bandwidth used to predict the swap stall of a '
+            'preemption.')
+        parser.add_argument(
+            '--starvation-delta',
+            type=float,
+            default=EngineArgs.starvation_delta,
+            help='Additive goodput bonus per frame a request has waited '
+            '(starvation prevention).')
+        parser.add_argument(
+            '--fairness-weight',
+            type=float,
+            default=EngineArgs.fairness_weight,
+            help='f in priority\' = (1-f) priority + f Fair(r); Fair(r) favors '
+            'clients with lower attained service. 0 disables.')
+        parser.add_argument(
+            '--max-waiting-time',
+            type=float,
+            default=EngineArgs.max_waiting_time,
+            help='Admission control: drop requests not scheduled within this '
+            'many seconds of arrival (the paper uses 5). Off by default: with '
+            'deadlines longer than the waiting time it drops requests that '
+            'could still meet their SLO. <= 0 disables.')
+
         return parser
 
     @classmethod
@@ -1110,7 +1171,15 @@ class EngineArgs:
             penalty_factor=self.penalty_factor,
             top_k_selection=self.top_k_selection,
             search_strategy=self.search_strategy,
-            max_swaps_per_iter=self.max_swaps_per_iter
+            max_swaps_per_iter=self.max_swaps_per_iter,
+            gmax_cutoff=self.gmax_cutoff,
+            gmax_window=self.gmax_window,
+            adaptive_cutoff=not self.disable_adaptive_cutoff,
+            preemption_threshold=self.preemption_threshold,
+            swap_bandwidth_gbps=self.swap_bandwidth_gbps,
+            starvation_delta=self.starvation_delta,
+            fairness_weight=self.fairness_weight,
+            max_waiting_time=self.max_waiting_time,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,

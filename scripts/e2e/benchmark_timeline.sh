@@ -4,6 +4,8 @@ policies=("jitserve" "ltr" "fcfs" "vllm" "autellix")
 rates=(6.0)
 batch_sizes=(32)
 penalty_factors=(100)
+max_num_seqs=128           # cap on concurrently running requests, same for every policy
+gmax_window=32             # GMAX window B per frame (JITServe only)
 
 # model and output dir settings
 # we also conduct experiments for Qwen/Qwen2.5-14B-Instruct, meta-llama/Llama-3.1-70B-Instruct, Qwen/Qwen3-30B-A3B
@@ -16,7 +18,9 @@ output_dir="batch_result/e2e-timeline/${model_short_name}/"
 default_trace_file="traces/lmsys.json"
 deepresearch_trace_file="traces/deepresearch_filter.jsonl"
 request_ratios="1,1,1"
-num_prompts="13000"
+# 13000 prompts at RPS 6 is the paper's run (~36 min of arrivals); NUM_PROMPTS=7200
+# gives a 20-minute version (about 30 min wall time per policy, including the drain).
+num_prompts="${NUM_PROMPTS:-13000}"
 use_all_node="false"
 
 mkdir -p "$output_dir"
@@ -84,7 +88,8 @@ start_server() {
         $prediction_arg \
         --enable-chunked-prefill "$chunked_prefill" \
         --penalty-factor "$penalty_factor" \
-        --max-num-seqs "$batch_size" \
+        --max-num-seqs "$max_num_seqs" \
+        --gmax-window "$gmax_window" \
         $extra_args \
         --model "$model" &
 }
@@ -156,8 +161,11 @@ for rate in "${rates[@]}"; do
                 echo "Starting server..."
                 start_server "$policy"
                 server_pid=$!
-                echo "Waiting for server init (40s)..."
-                sleep 40
+                echo "Waiting for server init..."
+                until curl -sf localhost:8000/health >/dev/null; do
+                    kill -0 $server_pid 2>/dev/null || { echo "Server exited during init"; exit 1; }
+                    sleep 5
+                done
                 echo "Starting client..."
                 
                 # benchmark_scheduler.py

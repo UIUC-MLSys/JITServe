@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
+import random
 import time
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import List, Tuple, Deque, Optional, Callable, Set, TYPE_CHECKING
+from typing import (Dict, List, Tuple, Deque, Optional, Callable, Set,
+                    TYPE_CHECKING)
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus
@@ -24,6 +26,45 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 _SLO_POLICY_NAMES = {"concord", "jitserve", "slo"}
+
+
+class CutoffTuner:
+    """Online adaptation of the GMAX cutoff p (paper §4.2).
+
+    The paper only says p is adapted online "by exploring different thresholds
+    and converging to those that maximize end-to-end goodput". We realize this
+    as epsilon-greedy local search over a fixed grid: each frame's achieved
+    goodput rate is credited (EMA) to the p used in that frame; most frames
+    use the best p so far, the rest try a neighbouring value.
+    """
+    GRID = (0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0)
+
+    def __init__(self, initial: float, adaptive: bool = True,
+                 epsilon: float = 0.1, alpha: float = 0.2,
+                 seed: int = 0) -> None:
+        self.adaptive = adaptive
+        self.grid = sorted(set(self.GRID) | {initial})
+        self.value: Dict[float, Optional[float]] = {p: None for p in self.grid}
+        self.current = initial
+        self.epsilon = epsilon
+        self.alpha = alpha
+        self._rng = random.Random(seed)
+
+    def update(self, goodput_rate: float) -> float:
+        if not self.adaptive:
+            return self.current
+        v = self.value[self.current]
+        self.value[self.current] = goodput_rate if v is None else (
+            (1 - self.alpha) * v + self.alpha * goodput_rate)
+        tried = [p for p in self.grid if self.value[p] is not None]
+        best = max(tried, key=lambda p: self.value[p])
+        if self._rng.random() < self.epsilon:
+            i = self.grid.index(best)
+            neighbours = self.grid[max(0, i - 1):i] + self.grid[i + 1:i + 2]
+            self.current = self._rng.choice(neighbours) if neighbours else best
+        else:
+            self.current = best
+        return self.current
 
 
 @dataclass
@@ -124,14 +165,74 @@ class SLOScheduler(Scheduler):
         if scheduler_config.policy == "slosserve":
             self.sloserve = None # placeholder
 
+        # GMAX state (paper §4.2/§4.3/§5).
+        self.policy.starvation_delta = scheduler_config.starvation_delta
+        self.cutoff_tuner = CutoffTuner(scheduler_config.gmax_cutoff,
+                                        scheduler_config.adaptive_cutoff)
+        # B (GMAX window per frame) vs. the cap on concurrently running
+        # requests (max_num_seqs, which _adjust_batch_limits rewrites).
+        self._max_running = scheduler_config.max_num_seqs
+        self._gmax_window = (scheduler_config.gmax_window
+                             or scheduler_config.max_num_seqs)
+        self._window_priority: Dict[int, float] = {}
+        self._frame_goodput = 0.0
+        self._frame_start = time.time()
+        self._client_service: Dict[int, float] = defaultdict(float)
+        num_cpu_blocks = cache_config.num_cpu_blocks or 0
+        self._kv_block_bytes = (cache_config.swap_space_bytes / num_cpu_blocks
+                                if num_cpu_blocks > 0 else 0.0)
+
     def _schedule(self) -> "SchedulerOutputs":
-        if self.sloserve is not None:
-            result = self._schedule_baseline()
-        if self.policy.update_schedule_count() and self._test_enough_swap_space():
+        dropped = self._admission_control()
+        self._accumulate_goodput()
+        is_frame_boundary = self.policy.update_schedule_count()
+        if is_frame_boundary:
+            self._end_frame()
+        if is_frame_boundary and self._test_enough_swap_space():
             result = self._schedule_slo()
         else:
             result = self._schedule_chunked_prefill()
+        if dropped:
+            result.ignored_seq_groups.extend(dropped)
         return result
+
+    def _admission_control(self) -> List[SequenceGroup]:
+        """§5: requests not scheduled within max_waiting_time are dropped."""
+        limit = self.scheduler_config.max_waiting_time
+        if limit is None or limit <= 0 or not self.waiting:
+            return []
+        now = time.time()
+        dropped = [
+            sg for sg in self.waiting
+            if sg.metrics.first_scheduled_time is None
+            and now - sg.arrival_time > limit
+        ]
+        for sg in dropped:
+            for seq in sg.get_seqs():
+                seq.status = SequenceStatus.FINISHED_IGNORED
+            self.waiting.remove(sg)
+            self.policy.delete_seq_group(sg)
+        if dropped:
+            logger.info("Admission control dropped %d requests waiting > %.1fs",
+                        len(dropped), limit)
+        return dropped
+
+    def _accumulate_goodput(self) -> None:
+        # SLOTracker stores the goodput each running request earned in the
+        # previous iteration in concord_metrics.service_gain.
+        for sg in self.running:
+            gain = sg.concord_metrics.service_gain
+            if gain > 0:
+                self._frame_goodput += gain
+                self._client_service[sg.client_id] += gain
+
+    def _end_frame(self) -> None:
+        now = time.time()
+        elapsed = now - self._frame_start
+        if elapsed > 0:
+            self.cutoff_tuner.update(self._frame_goodput / elapsed)
+        self._frame_goodput = 0.0
+        self._frame_start = now
     
 
     def _test_enough_swap_space(self) -> bool:
@@ -609,35 +710,40 @@ class SLOScheduler(Scheduler):
             self._pending_swap_out_queue.clear()
             return
 
-        k = self.scheduler_config.top_k_selection
-        scored = [(self._service_gain(sg), sg) for sg in preemption_list]
-        scored.sort(key=lambda x: x[0])
-        top_mk = [sg for _, sg in scored[:self.max_batch_size * k]]
-        top_mk.sort(key=self._seq_len)
-
-        best_sum, best_idx = float("-inf"), 0
-        batch_size = self.max_batch_size
-
-        if len(top_mk) >= batch_size:
-            cur_sum = sum(self._service_gain(sg) for sg in top_mk[:batch_size])
-            best_sum, best_idx = cur_sum, 0
-
-            for i in range(batch_size, len(top_mk)):
-                cur_sum += self._service_gain(top_mk[i])
-                cur_sum -= self._service_gain(top_mk[i - batch_size])
-                if cur_sum < best_sum:
-                    best_sum, best_idx = cur_sum, i - batch_size + 1
-
-            best_window = top_mk[best_idx:best_idx + batch_size]
+        # GMAX (paper Algorithm 1): keep requests whose priority is at least
+        # p * Priority(r_B), sort them by input length and pick the window of
+        # B consecutive requests with the largest total priority.
+        batch_size = self._gmax_window
+        priority = self._gmax_priorities(preemption_list)
+        self._window_priority = priority
+        ranked = sorted(preemption_list, key=lambda sg: priority[id(sg)],
+                        reverse=True)
+        if len(ranked) > batch_size:
+            threshold = self.cutoff_tuner.current * priority[id(
+                ranked[batch_size - 1])]
+            candidates = [sg for sg in ranked if priority[id(sg)] >= threshold]
         else:
-            best_window = top_mk
+            candidates = ranked
+        candidates.sort(key=self._input_len)
+
+        if len(candidates) > batch_size:
+            cur_sum = sum(priority[id(sg)] for sg in candidates[:batch_size])
+            best_sum, best_idx = cur_sum, 0
+            for i in range(batch_size, len(candidates)):
+                cur_sum += priority[id(candidates[i])]
+                cur_sum -= priority[id(candidates[i - batch_size])]
+                if cur_sum > best_sum:
+                    best_sum, best_idx = cur_sum, i - batch_size + 1
+            best_window = candidates[best_idx:best_idx + batch_size]
+        else:
+            best_window = candidates
 
         collections = {}
         schedule_time = self.policy.schedule_interval * self.policy.interval_time \
                         if self.policy.interval_time else self.policy.schedule_interval * 0.02
         for seq in best_window:
             if seq.request_type == RequestType.COLLECTIVE:
-                collections.get(seq.collection_id, []).append(seq)
+                collections.setdefault(seq.collection_id, []).append(seq)
 
         for cid, seqs in collections.items():
             demand = self._compute_collection_demand(
@@ -656,26 +762,90 @@ class SLOScheduler(Scheduler):
                             break
 
         self._current_bin_queue = deque(best_window)
-        seen = {id(sg) for sg in best_window}
 
-        if best_window:
-            self._current_bounds = (min(self._seq_len(sg)
-                                        for sg in best_window),
-                                    max(self._seq_len(sg)
-                                        for sg in best_window) + 1)
-        else:
-            self._current_bounds = (0, 0)
-        self._current_is_last = True
+    def _input_len(self, seq_group: SequenceGroup) -> int:
+        return seq_group.first_seq.get_prompt_len()
 
-        pend = deque()
-        for sg in list(self.running):
-            if not self._in_bounds(self._seq_len(sg), self._current_bounds,
-                                   self._current_is_last):
-                pend.append(sg)
-            elif id(sg) not in seen:
-                self._current_bin_queue.append(sg)
-                seen.add(id(sg))
-        self._pending_swap_out_queue = pend
+    def _gmax_priorities(self,
+                         seq_groups: List[SequenceGroup]) -> Dict[int, float]:
+        """Priority(r) = goodput/t_gen per request (higher is better), mixed
+        with Fair(r) when fairness_weight f > 0 (paper §4.3):
+        priority' = (1-f) * priority + f * Fair(r). Both terms are normalized
+        to [0, 1]; Fair(r) is 1 - the client's share of attained goodput
+        relative to the most-served client."""
+        priority = {id(sg): -self._service_gain(sg) for sg in seq_groups}
+        f = self.scheduler_config.fairness_weight
+        if f <= 0 or not seq_groups:
+            return priority
+        max_pri = max(max(priority.values()), 1e-9)
+        max_service = max([self._client_service[sg.client_id]
+                           for sg in seq_groups] + [1e-9])
+        return {
+            id(sg): (1 - f) * priority[id(sg)] / max_pri + f *
+            (1 - self._client_service[sg.client_id] / max_service)
+            for sg in seq_groups
+        }
+
+    def _preemption_worth_it(self, new_priority: float, victim_priority: float,
+                             victim: SequenceGroup) -> bool:
+        """Preempt only if the projected gain exceeds the cost (paper §4.2,
+        App. D Eq. 9): Priority(A) > (1+delta) Priority(B) and
+        (Priority(A) - Priority(B)) * frame > goodput_loss, where
+        goodput_loss = stall x speed, i.e. the goodput B forgoes while its KV
+        cache is swapped out and back in."""
+        if new_priority <= (1 + self.scheduler_config.preemption_threshold
+                            ) * victim_priority:
+            return False
+        num_blocks = math.ceil(self._seq_len(victim) /
+                               self.cache_config.block_size)
+        bandwidth = self.scheduler_config.swap_bandwidth_gbps * 1e9
+        stall = 2 * num_blocks * self._kv_block_bytes / bandwidth
+        gain = (new_priority - victim_priority) * self.policy.frame_time()
+        return gain > victim_priority * stall
+
+    def _gmax_admission(self, running_result) -> Tuple[int, List[SequenceGroup]]:
+        """Admit the selected window: newcomers fill free slots first, then
+        may displace running requests outside the window, lowest priority
+        first, if the preemption is worth its cost."""
+        priority = self._window_priority
+        window = list(self._current_bin_queue)
+        in_window = {id(sg) for sg in window}
+        waiting_or_swapped = {id(sg) for sg in self.waiting}
+        waiting_or_swapped.update(id(sg) for sg in self.swapped)
+
+        running = [sg for sg in self.running if not sg.is_finished()]
+        newcomers = sorted(
+            (sg for sg in window if id(sg) in waiting_or_swapped),
+            key=lambda sg: priority.get(id(sg), 0.0), reverse=True)
+        free_slots = max(0, self._max_running - len(running))
+        admitted = newcomers[:free_slots]
+
+        victims = sorted((sg for sg in running if id(sg) not in in_window),
+                         key=lambda sg: priority.get(id(sg), 0.0))
+        preempted: Set[int] = set()
+        swaps_budget = max(0, int(self.max_swaps_per_iter))
+        for sg in newcomers[free_slots:]:
+            if not victims or swaps_budget == 0:
+                break
+            victim = victims[0]
+            if not self._preemption_worth_it(priority.get(id(sg), 0.0),
+                                             priority.get(id(victim), 0.0),
+                                             victim):
+                break
+            victims.pop(0)
+            swaps_budget -= 1
+            preempt_mode = self._preempt(victim,
+                                         running_result.blocks_to_swap_out,
+                                         PreemptionMode.SWAP)
+            if preempt_mode == PreemptionMode.SWAP:
+                running_result.swapped_out.append(victim)
+            else:
+                running_result.preempted.append(victim)
+            preempted.add(id(victim))
+            admitted.append(sg)
+
+        kept = [sg for sg in running if id(sg) not in preempted]
+        return len(preempted), admitted + kept
 
     def _init_preemption_outputs(self, enable_chunking: bool,
                                  SchedulerPrefillOutputs,
@@ -760,7 +930,7 @@ class SLOScheduler(Scheduler):
     def _adjust_batch_limits(self, process_list, min_tbt_required, budget):
         if self.search_strategy != "sliding_window":
             return
-        self.scheduler_config.max_num_seqs = max(self.max_batch_size,
+        self.scheduler_config.max_num_seqs = max(self._max_running,
                                                  len(process_list))
         budget.max_num_seqs = self.scheduler_config.max_num_seqs
         logger.info(
@@ -784,6 +954,7 @@ class SLOScheduler(Scheduler):
         stop_allocate = False
         stop_preempt = False
         force_preemption_count = 0
+        uncapped_new_tokens: Dict[int, int] = {}
 
         for seq_group in process_list:
             seq_group_is_prefill = seq_group.is_prefill()
@@ -802,6 +973,9 @@ class SLOScheduler(Scheduler):
                 seq_group, seq_group_status, enable_chunking, budget)
 
             if seq_group_is_prefill:
+                # Reserve a minimal chunk for every prefill first; the rest of
+                # the token budget is handed out after all decodes are placed.
+                uncapped_new_tokens[id(seq_group)] = num_new_tokens
                 num_new_tokens = min(num_new_tokens, 2)
 
             not_update = False
@@ -895,6 +1069,13 @@ class SLOScheduler(Scheduler):
                 swapped_scheduled_result.blocks_to_copy)
 
         for running_seq, num_new_tokens, num_lookahead_slots in running_scheduled:
+            if running_seq.is_prefill():
+                add_tokens = min(
+                    uncapped_new_tokens.get(id(running_seq), num_new_tokens) -
+                    num_new_tokens, budget.remaining_token_budget())
+                if add_tokens > 0:
+                    num_new_tokens += add_tokens
+                    budget._num_batched_tokens += add_tokens
             can_append = self._can_append_slots(running_seq, enable_chunking)
             if not can_append:
                 running_result.leftover_running.append(running_seq)
@@ -950,8 +1131,9 @@ class SLOScheduler(Scheduler):
         st_schedule_time = time.perf_counter()
 
         if self.search_strategy == "sliding_window":
-            self._recompute_bins_sliding_window()
-        elif not self._pending_swap_out_queue:
+            return self._schedule_gmax(budget, enable_chunking,
+                                       st_schedule_time)
+        if not self._pending_swap_out_queue:
             self._recompute_bins()
 
         prefill_result, swapped_in_result, running_result = \
@@ -1008,6 +1190,37 @@ class SLOScheduler(Scheduler):
             force_preemption_count=force_preemption_count,
         )
     
+    def _schedule_gmax(self, budget: "SchedulingBudget", enable_chunking: bool,
+                       st_schedule_time: float
+                       ) -> "SLOSchedulerPreemptionOutputs":
+        self._recompute_bins_sliding_window()
+        prefill_result, swapped_in_result, running_result = \
+            self._init_preemption_outputs(enable_chunking, SchedulerPrefillOutputs,
+                                          SchedulerSwappedInOutputs)
+        preempted_count, process_list = self._gmax_admission(running_result)
+        min_tbt_required = min(
+            [sg.TBT_constraint for sg in process_list if sg in self.running],
+            default=0.001)
+        logger.info(
+            f"GMAX frame: p={self.cutoff_tuner.current} "
+            f"window={len(self._current_bin_queue)} "
+            f"process_list={len(process_list)} preempted={preempted_count}")
+
+        self._adjust_batch_limits(process_list, min_tbt_required, budget)
+        force_preemption_count = preempted_count + self._schedule_process_list(
+            process_list, running_result, prefill_result, swapped_in_result,
+            budget, enable_chunking)
+
+        self.total_preemption_time += time.perf_counter() - st_schedule_time
+        self._scheduler_running_outputs_cache[self.next_cache_id].reset()
+        self._scheduled_seq_group_cache[self.next_cache_id].reset()
+        return SLOSchedulerPreemptionOutputs(
+            prefill_result=prefill_result,
+            swapped_in_result=swapped_in_result,
+            running_result=running_result,
+            force_preemption_count=force_preemption_count,
+        )
+
     def _schedule_slo(self) -> "SchedulerOutputs":
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
